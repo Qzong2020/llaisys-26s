@@ -30,4 +30,4 @@ void add(std::byte *c, const std::byte *a, const std::byte *b, llaisysDataType_t
         EXCEPTION_UNSUPPORTED_DATATYPE(type);
     }
 }
-} // namespace llaisys::ops::cpu
+}
