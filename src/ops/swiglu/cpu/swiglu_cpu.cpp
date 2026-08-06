@@ -15,7 +15,7 @@ void swiglu_(std::byte *out, const std::byte *gate, const std::byte *up, size_t 
         float u = llaisys::utils::cast<float>(U[i]);
         // sigmoid(g) = 1 / (1 + e^(-g))
         float sig = 1.0f / (1.0f + std::exp(-g));
-        float result = u * sig;
+        float result = u * sig * g;
         Y[i] = llaisys::utils::cast<T>(result);
     }
 }
