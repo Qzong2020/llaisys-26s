@@ -266,15 +266,18 @@
   - 正式运行 `python test/test_infer.py --model /public/swiftllm/summer/models/DeepSeek-R1-Distill-Qwen-1.5B --test` 通过；HF 与 LLAISYS 的完整 90-token 列表逐项一致，首四个新 token 为 `[91786, 0, 358, 2776]`，最后一个 token 为 EOS `151643`。本轮 HF 用时 34.44 秒，LLAISYS 用时 640.97 秒。
   - 峰值内存沿用 T3-11 对同一正式 128 步档位的观测结果 7587.20 MiB；本轮环境不存在 `/usr/bin/time`，没有伪造新的峰值数据。
   - `git diff --check` 通过；`git diff --name-only -- test` 为空。完整改动审计未发现固定测试输入/输出或固定生成 token，未修改、删除或放宽官方测试，未修改既有 Task 2 算子实现，也未加入 Task 4 CUDA 模型推理代码。
-  - GitHub Actions 配置仍包含 `windows-latest` 和 `ubuntu-latest` release 构建矩阵。本机 Linux release 构建已通过；尝试以 `clang-cl` 配置 Windows 目标时，Xmake 因本机没有 MSVC/Windows SDK 而在源码编译前拒绝配置。当前 Task 3 改动尚未提交或推送，因此无法据实声明实际 Linux/Windows CI 已通过。
+  - GitHub Actions 配置仍包含 `windows-latest` 和 `ubuntu-latest` release 构建矩阵。本机 Linux release 构建已通过；尝试以 `clang-cl` 配置 Windows 目标时，Xmake 因本机没有 MSVC/Windows SDK 而在源码编译前拒绝配置，当时尚不能据此声明实际 Windows CI 已通过。
 - **Windows 兼容修复**：
   - Windows CI 的 MSVC `/EHc` 构建在 `src/llaisys/qwen2.cc` 报 C4297：`extern "C"` API 被默认视为不抛异常，但 create/weights/reset/infer 中的参数检查会抛出 `std::invalid_argument`，该警告因 `set_warnings("all", "error")` 被升级为错误。
   - 在公共头中增加 C++ 下展开为 `noexcept(false)`、其他语言下为空的 `LLAISYS_MAY_THROW`，并只标注确实可能抛异常的四个 Qwen2 C API；定义处同步使用 `noexcept(false)`。没有关闭 C4297、放宽 warnings-as-errors 或删除参数检查。
   - C++17 头文件 `-Werror` 语法检查通过；Linux release 重新构建和安装成功，`qwen2.cc` 已实际重编译。
   - 一次性 C++ smoke test 使用 `static_assert` 确认四个 API 均为可抛异常声明，并确认空 Meta 仍抛出、可捕获 `std::invalid_argument`；官方 runtime CPU 测试通过。
   - 官方 `test/test_infer.py --test --max_steps 1` 通过：HF 与 LLAISYS 完整列表一致，首个新 token 仍为 `91786`；HF 0.98 秒，LLAISYS 57.67 秒。
-- **剩余验收项**：提交并推送当前 Task 3 改动后，确认 GitHub Actions 的 Ubuntu/Windows 两个 build job 均通过；在此之前不把本阶段标记为完成。
-- **当前状态**：未完成（本地完整回归与 Linux 构建已通过，等待实际 Linux/Windows CI）
+- **实际 CI 确认**：
+  - 当前 `main`、本地 `origin/main` 和 `git ls-remote origin refs/heads/main` 均指向提交 `9eccc185cb1ae824409eafc39ee5055c45258bd7`（`task3 solve windows`），确认修复已经推送。
+  - GitHub Actions `Build and test` run `31247929952`（run #5）状态为 `completed/success`，其 head SHA 与上述提交一致。
+  - `Build (ubuntu-latest, release)` job `93079476676` 和 `Build (windows-latest, release)` job `93079476732` 均为 `completed/success`；两边的构建安装以及 Assignment-0～3 步骤全部成功。
+- **当前状态**：已完成
 
 ## 重要风险
 
@@ -321,6 +324,325 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 
 - Task 3 实现：**已完成**
 - Task 3 正式端到端验收：**已完成**
-- Task 3 完整回归与交付检查：**未完成（本地回归已通过，等待实际 Linux/Windows CI）**
-- 已完成阶段：T3-01、T3-02、T3-03、T3-04、T3-05、T3-06、T3-07、T3-08、T3-09、T3-10、T3-11。
-- 下一个未完成阶段：T3-12 完整回归与交付检查；本地验证已完成，剩余实际 Linux/Windows CI 状态确认。
+- Task 3 完整回归与交付检查：**已完成（本地完整回归以及实际 Ubuntu/Windows CI 均通过）**
+- 已完成阶段：T3-01、T3-02、T3-03、T3-04、T3-05、T3-06、T3-07、T3-08、T3-09、T3-10、T3-11、T3-12。
+- Task 3 全部阶段均已完成。
+
+# Task 4 实施进度
+
+## 最终验收目标
+
+按照 `README_ZN.md` 的 Task 4 要求，在不回归现有 CPU 路径和 Task 3 Qwen2 推理的前提下：
+
+- 从 Nvidia、天数、摩尔、沐曦中选择至少两款真实 CUDA/类 CUDA 平台，不能只声明源码“理论兼容”。
+- 通过 `--nv-gpu=y` 条件化编译设备 Runtime、CUDA 算子和所需设备资源；关闭该选项时不得编译、链接或探测 CUDA SDK。
+- 完整实现 `LlaisysRuntimeAPI` 的设备、Stream、内存分配/释放、同步/异步拷贝接口。
+- 为 Task 2 的 7 个正式算子及 Add 实现 F32、F16、BF16 CUDA 路径，并保持模型依赖的原地写和无 bias 行为正确。
+- 复用 Task 3 已完成的 Qwen2 拓扑、权重映射、greedy generate 和惰性 KV Cache，仅把模型存储、前向和状态管理改造成设备安全的单设备 CUDA 路径；Task 4 不扩展多卡模型切分。
+- 在两款目标平台上分别通过 Runtime、全部 CUDA 算子和以下正式推理命令，完整 token 列表与 PyTorch/reference 一致：
+
+  ```bash
+  python test/test_infer.py --model /path/to/model --test --device nvidia
+  ```
+
+- 最终完成 CPU/CUDA 回归、CI 与双平台实机复现报告，逐平台记录硬件、驱动、SDK/编译器、结果、耗时和峰值显存。
+
+## 状态约定与执行顺序
+
+- `未完成`：尚未开始实现，或尚未通过该子任务的全部独立验收。
+- `已完成`：对应实现、官方测试、必要的严格补充验证及直接相关 CPU 回归均已通过。
+- Task 4 分析和拆分已完成；T4-01 已开始证据调查，但尚未满足双平台冻结条件。
+- 后续仍遵守一次只推进一个独立子任务；依赖顺序为 T4-01 → T4-02 → T4-03 → T4-04 → T4-05 → T4-06～T4-13 → T4-14 → T4-15 → T4-16 → T4-17 → T4-18 → T4-19。
+- 每个硬件相关子任务必须保留两款平台各自的真实运行记录；第一款平台的结果不能替代第二款平台验收。
+
+## 当前仓库基线与范围判断
+
+- `xmake.lua` 已有 `--nv-gpu`、`ENABLE_NVIDIA_API` 和 `includes("xmake/nvidia.lua")`，但 `xmake/nvidia.lua` 尚不存在；当前 CUDA 开关无法形成完整构建。
+- `src/device/nvidia/` 已有 Runtime/Resource 骨架，不应重复设计；Runtime 全部接口仍为占位实现，且 `memcpyAsync` 当前缺少公共 ABI 要求的 Stream 参数。
+- Add、Argmax、Embedding、Linear、RMSNorm、RoPE、Self-Attention、SwiGLU 的派发层均已有 NVIDIA 分支，但仍是 `TO_BE_IMPLEMENTED()`，也没有 `src/ops/*/nvidia/` 实现。
+- 当前公共设备枚举和 Python/官方测试只暴露 `LLAISYS_DEVICE_NVIDIA` / `--device nvidia`。默认方案是让两款物理平台复用同一逻辑 CUDA backend；只有 T4-01 证实第二平台无法复用兼容 ABI 时，才最小化增加厂商构建适配，不预先扩张公共 API。
+- 平台 A 固定为 Nvidia；平台 B 必须在 T4-01 从天数、摩尔、沐曦中结合实际获批算力和 SDK 后确定。没有真实硬件和工具链的信息时不臆选第二平台。
+- `Context` 当前存在 GPU 启用后必须验证的生命周期风险：`_current_runtime` 未显式初始化，`setDevice` 修改 Runtime vector 副本，且 Runtime 在激活目标设备前创建 Stream。
+- Qwen2 C API、Python 构造和权重检查目前明确限制 CPU；KV Cache 扩容/写入使用 `std::memcpy`，最终 argmax 直接解引用 Tensor 地址，均不能用于设备指针。
+- 当前 CUDA 官方测试存在覆盖缺口，不能利用这些缺口获得 PASS：Runtime 会在零设备时静默跳过；Embedding 没有断言比较结果；Argmax 只要求值或索引之一正确；Linear 不测无 bias；Add、RoPE、SwiGLU 不测模型使用的原地路径；Self-Attention 的 GPU reference mask 还需核对设备放置。
+- `test/test_ops.py` 实际不存在，算子回归必须逐个运行现有 8 个 `test/ops/*.py` 脚本。
+- `rearrange` 虽有公共入口和源码目录，但 README 没有定义其语义，CPU 仍未实现、没有官方测试且 Qwen2 不使用。T4-01 必须向官方/导师确认其 Task 4 范围；在语义未确认前不自行设计实现。若确认必需，应先在本文件新增单独、可参考对照的子任务，再开始代码。
+- 当前开发节点 `node4` 的默认沙箱不暴露 `/dev/nvidia*`，但经获批的只读设备探针已确认宿主 NVIDIA Runtime 和两张 A800 均可实际运行；后续 GPU 验证必须使用同等级设备权限，不能把沙箱内零设备误报为平台状态。
+- T3-12 的实际 Ubuntu/Windows GitHub Actions 已确认通过，可作为 Task 4 开发基线。
+
+## 子任务
+
+### T4-01 冻结双平台、工具链与验收矩阵
+
+- **目标**：确定 Nvidia 平台 A 和一款天数/摩尔/沐曦平台 B 的具体设备、驱动、SDK、编译器、BLAS 能力和 PyTorch/reference 运行方式；确认两平台是否共用现有 `LLAISYS_DEVICE_NVIDIA` ABI，并闭合 `rearrange` 是否属于官方 Task 4 范围。
+- **依赖**：Task 4 规划完成；开始实现前确认 T3-12 的实际 CI 状态，或明确记录采用当前本地完整回归作为开发基线。
+- **可能涉及的文件**：原则上不修改源码；更新 `PROGRESS.md`，交付阶段可同步平台报告。
+- **验收方法**：形成包含两款真实平台的矩阵，逐项记录设备型号、可见设备数、驱动、Runtime/SDK、编译器、BLAS、PyTorch 设备映射、构建命令和算力有效期；两边均确认有至少一张可运行设备；记录逻辑 backend 复用或最小厂商适配结论；取得 `rearrange` 范围依据。平台 B 未确定或只有理论兼容说明时不得完成本任务。
+- **本轮调查结果**：
+  - Task 4 前置基线已闭合：当前远端 `main` 的 Task 3 提交 `9eccc185cb1ae824409eafc39ee5055c45258bd7` 对应 GitHub Actions run #5；Ubuntu/Windows release 两个 job 及 Assignment-0～3 全部通过，T3-12 已据实标记完成。
+  - 平台 A 已冻结为当前 `node4` 的 NVIDIA A800 80GB PCIe：宿主共 2 张，compute capability 8.0，驱动 `550.144.03`，`nvidia-smi` 报告 driver-supported CUDA 12.4；CUDA Toolkit 为 12.8（`nvcc` 12.8.61，Runtime 12.8.57），cuBLAS 为 12.8.3.14，主机编译器为 GCC 14.2.1 / Clang 19.1.7，Xmake 为 3.0.9-dev。
+  - 平台 A 的 reference 路径已实机验证：PyTorch `2.10.0+cu128` 通过标准 `torch.cuda` 看到 2 张 A800，CUDA 单元素加法成功；两张设备上的 F32、F16、BF16 `torch.mm` 均得到正确结果，BF16 capability 为 true；系统 CUDA Runtime 报 2 个设备，cuBLAS handle 可成功创建、查询和销毁。
+  - 平台 A 后续构建命令沿用官方 `xmake f --nv-gpu=y -cv && xmake && xmake install`，逻辑设备映射为现有 `LLAISYS_DEVICE_NVIDIA` / `--device nvidia`。该命令属于 T4-02，T4-01 未提前修改构建或运行项目 CUDA 测试。
+  - 本轮实机访问验证时间为 2026-08-08；当前 shell 不在 Slurm allocation 中，Slurm 也未给出账户算力到期时间，因此不能把本次可访问状态解释为后续阶段的有效期保证。
+  - 平台 B 尚未冻结：本机没有发现天数、摩尔或沐曦设备节点、SDK、编译器、管理工具、BLAS 或 PyTorch 扩展；Slurm 的 6 个节点仅登记无厂商类型的 `gpu:2`，没有平台/SDK/有效期证据。一次 node6 的只读作业探针因 Slurm `Error generating job credential` 未能启动，且没有遗留作业；不能据此臆选第二平台。
+  - 当前仓库的公共设备枚举、Runtime 派发、Python 和测试只定义 CPU/NVIDIA。平台 A 明确复用 `LLAISYS_DEVICE_NVIDIA`；平台 B 是否可复用该逻辑 ABI，必须在取得具体平台及兼容 SDK 后判断，目前不新增公共设备类型或厂商分支。
+  - `README_ZN.md` 的 Task 2 明确列出 7 个正式算子，Task 4 CI 再覆盖 Add，共 8 个；全文没有定义 `rearrange`，仓库也没有其测试，Qwen2 不调用它。当前可审计范围因此是 Add 加 7 个正式算子，但 Task 4 的“每个算子目录”措辞仍有歧义；在取得官方/导师书面确认前，不猜测 `rearrange` 语义或实现它。
+- **当前验收矩阵**：
+
+  | 项目 | 平台 A | 平台 B |
+  | --- | --- | --- |
+  | 厂商/设备/数量 | NVIDIA A800 80GB PCIe × 2（node4） | 待从天数、摩尔、沐曦中确定 |
+  | 驱动 | 550.144.03 | 未提供 |
+  | Runtime / SDK | CUDA driver API 12.4；Toolkit / Runtime 12.8 | 未提供 |
+  | 编译器 | nvcc 12.8.61；GCC 14.2.1；Clang 19.1.7；Xmake 3.0.9-dev | 未提供 |
+  | BLAS | cuBLAS 12.8.3.14，已实际创建 handle | 未提供 |
+  | reference | PyTorch 2.10.0+cu128 / `torch.cuda`，2 卡三 dtype 实测通过 | 未提供 |
+  | LLAISYS 逻辑 ABI | `LLAISYS_DEVICE_NVIDIA` / `--device nvidia` | 待具体 SDK 验证后决定是否复用 |
+  | 计划构建命令 | `xmake f --nv-gpu=y -cv && xmake && xmake install` | 待平台/SDK 确定 |
+  | 算力有效期 | 2026-08-08 当日可运行；未提供到期时间 | 未提供 |
+
+- **阻塞项**：需要用户提供一款已获批的天数、摩尔或沐曦平台 B 的访问方式/有效期及 SDK 环境，并提供官方/导师对 `rearrange` 是否纳入 Task 4 的书面结论。两项闭合后才能完成矩阵并决定平台 B 的 ABI/构建适配。
+- **当前状态**：未完成（平台 A 与 Task 3 CI 基线已确认；平台 B、算力有效期和 `rearrange` 书面范围仍缺失）
+
+### T4-02 接通可开关的双平台 CUDA 构建
+
+- **目标**：建立 CUDA Runtime/算子静态目标及最终共享库的条件依赖和链接流程；复用现有 `--nv-gpu` 开关，使 CPU-only 构建完全不依赖 CUDA。
+- **依赖**：T4-01。
+- **可能涉及的文件**：
+  - `xmake.lua`
+  - 新建 `xmake/nvidia.lua`
+  - 仅当 T4-01 证明必要时新增最小厂商构建适配文件
+- **验收方法**：在两平台分别从干净 Xmake 配置执行 `xmake f --nv-gpu=y -cv && xmake && xmake install`，最终 Python 包能加载对应共享库；使用 `--nv-gpu=n` 从干净配置构建安装成功、无需 CUDA SDK，且 `python test/test_runtime.py --device cpu` 通过；检查不同平台构建缓存没有混用。此阶段只打通构建，不实现 Runtime 或算子算法。
+- **当前状态**：未完成
+
+### T4-03 实现 Nvidia CUDA Runtime API
+
+- **目标**：在平台 A 完整实现设备查询/切换/同步、Stream 创建/销毁/同步、Device/Host 内存分配释放、四种方向的同步与异步拷贝，并统一检查 CUDA 调用错误；修正 `memcpyAsync` ABI 签名。
+- **依赖**：T4-02。
+- **可能涉及的文件**：
+  - `src/device/nvidia/nvidia_runtime_api.cu`
+  - `src/device/runtime_api.hpp`
+  - `src/device/runtime_api.cpp`
+  - `src/device/nvidia/nvidia_resource.cu`
+  - `src/device/nvidia/nvidia_resource.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：先运行官方 `python test/test_runtime.py --device nvidia`，并额外断言设备数大于 0；再用独立严格测试覆盖 `malloc/free device`、`malloc/free host`、H2H/H2D/D2H/D2D、非默认 Stream 上的 async copy、Stream/Device synchronize、重复分配释放和全部可见 device。CUDA-enabled 构建中的 CPU Runtime 测试仍需通过。
+- **当前状态**：未完成
+
+### T4-04 适配并验收第二款平台 Runtime
+
+- **目标**：让 T4-03 的同一逻辑 Runtime 在平台 B 工作；仅对实际 SDK、头文件、编译器或 Runtime API 差异增加最小兼容层，不复制上层模型或算子逻辑。
+- **依赖**：T4-03。
+- **可能涉及的文件**：
+  - `xmake/nvidia.lua`
+  - `src/device/nvidia/nvidia_runtime_api.cu`
+  - `src/device/nvidia/nvidia_resource.cu`
+  - 仅当 T4-01 已确认必要时的厂商兼容头或构建文件
+- **验收方法**：在平台 B 独立执行与 T4-03 完全相同的严格 Runtime 测试，设备数必须大于 0，全部同步/异步、Stream、Host/Device 内存和设备切换用例通过；保留平台 B 的独立构建与运行日志，不能引用平台 A 结果代替。
+- **当前状态**：未完成
+
+### T4-05 修正 Context、Runtime、Resource 与 Tensor 的设备生命周期
+
+- **目标**：保证每线程、每设备只有一个惰性 Runtime；设备激活先于 Stream/设备资源创建；切换后新 Runtime 被持久保存，存储和资源始终在所属设备上释放；GPU Tensor 能正确创建、加载、读回和调试。
+- **依赖**：T4-04。
+- **可能涉及的文件**：
+  - `src/core/context/context.hpp`
+  - `src/core/context/context.cpp`
+  - `src/core/runtime/runtime.hpp`
+  - `src/core/runtime/runtime.cpp`
+  - 必要时 `src/core/storage/storage.cpp`
+  - 必要时 `src/tensor/tensor.cpp`
+  - `src/device/nvidia/nvidia_resource.cu`
+  - `src/device/nvidia/nvidia_resource.cuh`
+- **验收方法**：在两平台分别验证同线程 CPU↔GPU、GPU 0↔GPU 1（有多卡时）和重复切换；Tensor 创建、H2D/D2H、view/permute/slice 元数据与内容、debug、销毁均正确；多线程各自建立和销毁 Context 不串设备、不崩溃、无明显泄漏。重新运行 CPU Runtime/Tensor 官方测试和 NVIDIA Runtime 严格测试。
+- **当前状态**：未完成
+
+### T4-06 实现 CUDA Add
+
+- **目标**：实现连续同 shape Tensor 的 CUDA Add，支持 F32、F16、BF16，并保证 `out == a` 或 `out == b` 的原地残差写安全。
+- **依赖**：T4-05。
+- **可能涉及的文件**：
+  - `src/ops/add/op.cpp`
+  - 新建 `src/ops/add/nvidia/add_nvidia.cu`
+  - 新建 `src/ops/add/nvidia/add_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别通过 `python test/ops/add.py --device nvidia`；额外严格比较三种 dtype 的两类原地别名场景；运行 `python test/ops/add.py --device cpu` 回归。
+- **当前状态**：未完成
+
+### T4-07 实现 CUDA Embedding
+
+- **目标**：按 I64 index 从二维权重精确 gather 行，支持 F32、F16、BF16，保持现有 shape/device/dtype 校验。
+- **依赖**：T4-06。
+- **可能涉及的文件**：
+  - `src/ops/embedding/op.cpp`
+  - 新建 `src/ops/embedding/nvidia/embedding_nvidia.cu`
+  - 新建 `src/ops/embedding/nvidia/embedding_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别运行 `python test/ops/embedding.py --device nvidia`，但不依赖其缺失的 assert；用独立严格断言覆盖首行、末行、重复 index 和三种 dtype，结果与 reference 完全一致；CPU Embedding 官方脚本回归。
+- **当前状态**：未完成
+
+### T4-08 实现 CUDA SwiGLU
+
+- **目标**：实现三种 dtype 的 CUDA SwiGLU，数值路径满足现有容差，并支持模型使用的 `out == gate` 原地调用。
+- **依赖**：T4-07。
+- **可能涉及的文件**：
+  - `src/ops/swiglu/op.cpp`
+  - 新建 `src/ops/swiglu/nvidia/swiglu_nvidia.cu`
+  - 新建 `src/ops/swiglu/nvidia/swiglu_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别通过 `python test/ops/swiglu.py --device nvidia`；补充 `out == gate`、小 shape 和 Qwen2 intermediate size 代表 shape 的严格 reference 对照；CPU SwiGLU 回归。
+- **当前状态**：未完成
+
+### T4-09 实现 CUDA RMSNorm
+
+- **目标**：沿最后一维完成稳定归约和归一化，支持 F32、F16、BF16，并覆盖 prefill 多行与 decode 单行。
+- **依赖**：T4-08。
+- **可能涉及的文件**：
+  - `src/ops/rms_norm/op.cpp`
+  - 新建 `src/ops/rms_norm/nvidia/rms_norm_nvidia.cu`
+  - 新建 `src/ops/rms_norm/nvidia/rms_norm_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别通过 `python test/ops/rms_norm.py --device nvidia`；额外覆盖 Qwen2 的 hidden size 1536、`eps=1e-6`、M=1 BF16 decode，用 FP32 reference 检查误差；CPU RMSNorm 回归。
+- **当前状态**：未完成
+
+### T4-10 实现 CUDA RoPE
+
+- **目标**：实现三种 dtype 的位置旋转，正确处理 I64 position id、Q/K 不同 head 数和非零历史位置，并支持 `out == in` 原地调用。
+- **依赖**：T4-09。
+- **可能涉及的文件**：
+  - `src/ops/rope/op.cpp`
+  - 新建 `src/ops/rope/nvidia/rope_nvidia.cu`
+  - 新建 `src/ops/rope/nvidia/rope_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别通过 `python test/ops/rope.py --device nvidia`；额外覆盖原地写、较大非零 position、`nh=12`/`nkvh=2`、`dh=128` 和三种 dtype；CPU RoPE 回归。
+- **当前状态**：未完成
+
+### T4-11 实现 CUDA Argmax
+
+- **目标**：对一维输入同时返回正确最大值和 I64 首个最大索引，支持 F32、F16、BF16，不能利用官方测试的 `or` 条件只实现一半结果。
+- **依赖**：T4-10。
+- **可能涉及的文件**：
+  - `src/ops/argmax/op.cpp`
+  - 新建 `src/ops/argmax/nvidia/argmax_nvidia.cu`
+  - 新建 `src/ops/argmax/nvidia/argmax_nvidia.cuh`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别运行 `python test/ops/argmax.py --device nvidia`；另用严格断言要求 value 与 index 同时正确，覆盖唯一最大值、并列最大值首索引、长 BF16 logits；CPU Argmax 回归。
+- **当前状态**：未完成
+
+### T4-12 实现 CUDA Linear 与设备 BLAS 资源
+
+- **目标**：实现 `Y = XW^T + b` 的三种 dtype CUDA 路径，支持可选 bias、M=1 decode 和大矩阵；若使用设备 BLAS，由每设备 Runtime/Resource 持有 handle 并绑定当前 Stream，不在每次调用重复创建。
+- **依赖**：T4-11。
+- **可能涉及的文件**：
+  - `src/ops/linear/op.cpp`
+  - 新建 `src/ops/linear/nvidia/linear_nvidia.cu`
+  - 新建 `src/ops/linear/nvidia/linear_nvidia.cuh`
+  - `src/device/nvidia/nvidia_resource.cu`
+  - `src/device/nvidia/nvidia_resource.cuh`
+  - 必要时 `src/core/runtime/runtime.hpp`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台分别通过 `python test/ops/linear.py --device nvidia` 的全部三 dtype 和大矩阵；补充 `bias=None`、M=1、Qwen2 代表维度和重复调用/切设备验证；确认 BLAS handle 使用正确 Stream 且生命周期无泄漏；CPU Linear 官方脚本及无 bias 补充验证回归。
+- **当前状态**：未完成
+
+### T4-13 实现 CUDA GQA Causal Self-Attention
+
+- **目标**：正确实现 GQA、causal offset、prefill 和 `qlen=1, kvlen>1` 增量 decode，支持 F32、F16、BF16，并服从当前 Runtime Stream 顺序。
+- **依赖**：T4-12。
+- **可能涉及的文件**：
+  - `src/ops/self_attention/op.cpp`
+  - 新建 `src/ops/self_attention/nvidia/self_attention_nvidia.cu`
+  - 新建 `src/ops/self_attention/nvidia/self_attention_nvidia.cuh`
+  - 必要时 `src/device/nvidia/nvidia_resource.cu`
+  - `xmake/nvidia.lua`
+- **验收方法**：两平台最终均须通过 `python test/ops/self_attention.py --device nvidia`，并以独立严格 GPU reference 覆盖 `qlen=kvlen`、`qlen=1/kvlen>1`、`nh=12/nkvh=2`、causal offset 和三种 dtype。若官方脚本先在 reference mask 的设备放置处失败，保留失败证据，不得跳过或放宽断言；仅在官方确认后最小修正测试夹具，后端仍以严格补充测试验收。CPU Self-Attention 回归。
+- **当前状态**：未完成
+
+### T4-14 完成双平台 CUDA 算子总回归与范围闭合
+
+- **目标**：确认 8 个正式 CUDA 算子全部进入构建和派发、没有残留占位分支，并落实 T4-01 对 `rearrange` 的范围结论。
+- **依赖**：T4-13。
+- **可能涉及的文件**：原则上不新增算法修改；检查 `xmake/nvidia.lua`、`src/ops/*/op.cpp` 和所有 `src/ops/*/nvidia/`。若官方确认 `rearrange` 必需，必须先新增独立子任务，不能在本阶段临时捎带实现。
+- **验收方法**：在两平台逐个运行实际存在的 Add、Argmax、Embedding、Linear、RMSNorm、RoPE、Self-Attention、SwiGLU NVIDIA 脚本以及 T4-06～T4-13 的严格补充用例；逐个运行对应 CPU 脚本；静态检查 8 个 NVIDIA 派发不再包含占位实现。可用 `--profile` 记录性能，但官方没有固定加速比，正确性是硬门槛。
+- **当前状态**：未完成
+
+### T4-15 支持 Qwen2 CUDA 创建、权重加载与生命周期
+
+- **目标**：解除 C API 和 Python 的 CPU-only 限制，继续保持单设备模型；在请求的 CUDA 设备上创建全部权重，复用现有严格 Safetensors 映射，通过同步 H2D 加载并安全 reset/destroy。
+- **依赖**：T4-14。
+- **可能涉及的文件**：
+  - `src/llaisys/qwen2.cc`
+  - `src/models/qwen2/model.hpp`
+  - `src/models/qwen2/model.cpp`
+  - `python/llaisys/models/qwen2.py`
+- **验收方法**：在两平台用小型 synthetic 模型验证 create、全部权重映射、reset、重复 destroy；真实目标模型严格加载 `3 + 12 * nlayer = 339` 个 BF16 权重，所有后端 Tensor 位于请求设备，抽样 D2H 原始字节与 Safetensors 源一致；未知/缺失/shape/dtype/错误设备仍明确失败；CPU 权重加载和生命周期回归。此阶段不开始完整 CUDA forward。
+- **当前状态**：未完成
+
+### T4-16 实现设备安全的 Qwen2 CUDA Prefill
+
+- **目标**：组合已验收 CUDA 算子完成单设备 prefill；首次 K/V 写入使用设备拷贝，最终 argmax 通过 D2H 返回，所有操作遵守 Runtime Stream，不直接 `std::memcpy` 或解引用设备指针。
+- **依赖**：T4-15。
+- **可能涉及的文件**：
+  - `src/models/qwen2/model.hpp`
+  - `src/models/qwen2/model.cpp`
+  - 必要时 `src/core/runtime/runtime.hpp`
+- **验收方法**：两平台的小模型单 token、多 token prefill 分别与 CPU/PyTorch reference 对照 embedding 到最终 argmax，首个分叉点可定位；真实目标模型运行 `--max_steps 1`，完整 token 列表一致；CPU `--max_steps 1` 回归。此阶段只验收首次 prefill，不提前完成增量 decode。
+- **当前状态**：未完成
+
+### T4-17 实现设备安全的 KV Cache 增量 Decode 与 Reset
+
+- **目标**：缓存扩容用 D2D 保留有效前缀，新 K/V 写入设备缓存，后续每次只处理一个新 token；reset 清零逻辑长度并复用容量，不按 `maxseq` 一次性分配。
+- **依赖**：T4-16。
+- **可能涉及的文件**：
+  - `src/models/qwen2/model.hpp`
+  - `src/models/qwen2/model.cpp`
+  - 必要时 `src/core/runtime/runtime.cpp`
+- **验收方法**：两平台验证 3-token prefill 后 capacity 惰性增长、跨扩容前缀保持、连续 decode 的 cache length 每步加 1、多 token decode 明确拒绝、reset 后相同 prompt 可复现；小模型每步结果与 CPU 全量重算/PyTorch 一致；真实模型至少通过 `--max_steps 4`，并记录缓存显存未按最大 131072 预分配。CPU KV Cache/generate 回归。
+- **当前状态**：未完成
+
+### T4-18 双平台分阶段端到端一致性验收
+
+- **目标**：在两款真实平台上从短生成逐步扩大到正式长度，确认完整 token 列表严格一致，并记录性能和显存。
+- **依赖**：T4-17。
+- **可能涉及的文件**：原则上不修改官方测试；只根据首个实际分叉点最小修复对应已实现模块。
+- **验收方法**：在平台 A、B 分别依次执行：
+
+  ```bash
+  python test/test_infer.py --model /path/to/model --test --device nvidia --max_steps 1
+  python test/test_infer.py --model /path/to/model --test --device nvidia --max_steps 4
+  python test/test_infer.py --model /path/to/model --test --device nvidia --max_steps 128
+  python test/test_infer.py --model /path/to/model --test --device nvidia
+  ```
+
+  四档均要求完整 token 列表逐项一致；确认长档实际使用增量 KV Cache；分别记录设备/驱动/SDK、构建产物、耗时和峰值显存。若第二平台的 PyTorch 发行版设备映射不同，必须使用 T4-01 已确认的等价严格 reference 流程，不能硬编码期望 token 或只报告理论兼容。
+- **当前状态**：未完成
+
+### T4-19 完整回归、CI 与双平台交付检查
+
+- **目标**：确认 Task 4 未破坏 CPU/Task 3，关闭 CUDA 时仍可移植构建，没有修改测试来放宽要求、硬编码输出或复制两套模型逻辑，并形成可复现交付材料。
+- **依赖**：T4-18。
+- **可能涉及的文件**：原则上不再新增功能修改；必要时 `.github/workflows/build.yaml`、`PROGRESS.md` 或独立交付报告 Markdown。
+- **验收方法**：
+  - 从干净配置完成 CUDA-off Linux/Windows 构建安装，运行 CPU Runtime、Tensor、8 个算子及 Task 3 正式推理。
+  - 在两平台从干净配置完成 CUDA-on 构建，运行严格 Runtime、GPU Tensor、8 个 CUDA 算子及正式 Qwen2 推理。
+  - 检查现有官方测试未被删除或放宽，补充测试不固定输入输出 token；运行 `git diff --check` 并审计全部 Task 4 改动。
+  - 现有 GitHub Actions 没有 GPU runner，不能用 CPU CI 代替双平台状态；应取得实际平台日志或受控 GPU CI，并如实区分 CPU CI、平台 A、平台 B 的结果。
+  - 报告完整复现命令、token 一致性、耗时、峰值显存及逐平台支持状态；未真实运行的项目不得标记通过。
+- **当前状态**：未完成
+
+## 当前已知 Task 4 风险与测试缺口
+
+1. 第二款平台尚未由实际算力和 SDK 确定；T4-01 是后续实现的硬前置，不能把 Nvidia 编译成功等同于满足双平台要求。
+2. CUDA build 当前在 Runtime 算法之前就会受缺失的 `xmake/nvidia.lua` 和 `memcpyAsync` ABI 不匹配阻塞，因此构建、Runtime、Context 必须按顺序独立闭环。
+3. 现有官方 Runtime 脚本在零设备时仍会报告通过，不能作为唯一验收；必须增加设备数非零、Stream、async、Host 分配释放和多设备严格检查。
+4. Embedding、Argmax 以及模型使用的原地/无 bias 路径存在已知测试缺口；Task 4 必须增加更严格验证，不得利用弱断言。
+5. `test/ops/self_attention.py` 的 causal mask 创建未显式放在 query 设备上，GPU reference 可能先于后端失败；必须保留根因证据并使用严格 reference，不得通过跳过测试处理。
+6. F16/BF16 kernel、设备 BLAS API 和累加精度可能在不同厂商工具链上存在差异；每个算子都要在两平台分别做 dtype 与数值验收，不能只在最终模型阶段补兼容。
+7. 当前 GitHub Actions 只有 CPU runner；最终双平台通过状态必须来自真实设备日志或 GPU CI，报告中应明确区分“未验证”“构建通过”和“运行通过”。
+
+## 当前总状态
+
+- Task 4 需求分析与任务拆分：**已完成**
+- Task 4 代码实现：**未开始**
+- 双平台选择：**未完成（平台 A 已冻结为 node4 的双 NVIDIA A800 80GB；平台 B 无实机/SDK/有效期证据）**
+- 已完成阶段：无。
+- 下一个阶段：仍为 T4-01 冻结双平台、工具链与验收矩阵；取得平台 B 访问资料和 `rearrange` 书面范围结论前，不开始 T4-02。
