@@ -31,16 +31,24 @@ __C {
 
     struct LlaisysQwen2Model;
 
-    __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(const LlaisysQwen2Meta *meta, llaisysDeviceType_t device, int *device_ids, int ndevice);
+    __export struct LlaisysQwen2Model *llaisysQwen2ModelCreate(
+        const LlaisysQwen2Meta *meta,
+        llaisysDeviceType_t device,
+        int *device_ids,
+        int ndevice) LLAISYS_MAY_THROW;
 
     __export void llaisysQwen2ModelDestroy(struct LlaisysQwen2Model *model);
 
     // Returned tensor handles are borrowed from model. Load through tensorLoad,
     // but do not destroy them separately.
-    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model *model);
+    __export struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(
+        struct LlaisysQwen2Model *model) LLAISYS_MAY_THROW;
 
-    __export void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model);
+    __export void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model) LLAISYS_MAY_THROW;
 
-    __export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken);
+    __export int64_t llaisysQwen2ModelInfer(
+        struct LlaisysQwen2Model *model,
+        int64_t *token_ids,
+        size_t ntoken) LLAISYS_MAY_THROW;
 }
 #endif // LLAISYS_MODELS_QWEN2_H

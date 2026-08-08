@@ -267,6 +267,12 @@
   - 峰值内存沿用 T3-11 对同一正式 128 步档位的观测结果 7587.20 MiB；本轮环境不存在 `/usr/bin/time`，没有伪造新的峰值数据。
   - `git diff --check` 通过；`git diff --name-only -- test` 为空。完整改动审计未发现固定测试输入/输出或固定生成 token，未修改、删除或放宽官方测试，未修改既有 Task 2 算子实现，也未加入 Task 4 CUDA 模型推理代码。
   - GitHub Actions 配置仍包含 `windows-latest` 和 `ubuntu-latest` release 构建矩阵。本机 Linux release 构建已通过；尝试以 `clang-cl` 配置 Windows 目标时，Xmake 因本机没有 MSVC/Windows SDK 而在源码编译前拒绝配置。当前 Task 3 改动尚未提交或推送，因此无法据实声明实际 Linux/Windows CI 已通过。
+- **Windows 兼容修复**：
+  - Windows CI 的 MSVC `/EHc` 构建在 `src/llaisys/qwen2.cc` 报 C4297：`extern "C"` API 被默认视为不抛异常，但 create/weights/reset/infer 中的参数检查会抛出 `std::invalid_argument`，该警告因 `set_warnings("all", "error")` 被升级为错误。
+  - 在公共头中增加 C++ 下展开为 `noexcept(false)`、其他语言下为空的 `LLAISYS_MAY_THROW`，并只标注确实可能抛异常的四个 Qwen2 C API；定义处同步使用 `noexcept(false)`。没有关闭 C4297、放宽 warnings-as-errors 或删除参数检查。
+  - C++17 头文件 `-Werror` 语法检查通过；Linux release 重新构建和安装成功，`qwen2.cc` 已实际重编译。
+  - 一次性 C++ smoke test 使用 `static_assert` 确认四个 API 均为可抛异常声明，并确认空 Meta 仍抛出、可捕获 `std::invalid_argument`；官方 runtime CPU 测试通过。
+  - 官方 `test/test_infer.py --test --max_steps 1` 通过：HF 与 LLAISYS 完整列表一致，首个新 token 仍为 `91786`；HF 0.98 秒，LLAISYS 57.67 秒。
 - **剩余验收项**：提交并推送当前 Task 3 改动后，确认 GitHub Actions 的 Ubuntu/Windows 两个 build job 均通过；在此之前不把本阶段标记为完成。
 - **当前状态**：未完成（本地完整回归与 Linux 构建已通过，等待实际 Linux/Windows CI）
 

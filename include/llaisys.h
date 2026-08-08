@@ -11,10 +11,12 @@
 
 #ifdef __cplusplus
 #define __C extern "C"
+#define LLAISYS_MAY_THROW noexcept(false)
 #include <cstddef>
 #include <cstdint>
 #else
 #define __C
+#define LLAISYS_MAY_THROW
 #include <stddef.h>
 #include <stdint.h>
 #endif

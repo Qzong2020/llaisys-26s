@@ -84,7 +84,7 @@ __C {
         const LlaisysQwen2Meta *meta,
         llaisysDeviceType_t device,
         int *device_ids,
-        int ndevice) {
+        int ndevice) noexcept(false) {
         CHECK_ARGUMENT(meta != nullptr, "Qwen2: meta must not be null");
         CHECK_ARGUMENT(device_ids != nullptr, "Qwen2: device_ids must not be null");
         CHECK_ARGUMENT(ndevice == 1, "Qwen2: Task 3 supports exactly one device");
@@ -97,12 +97,12 @@ __C {
         delete model;
     }
 
-    struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model *model) {
+    struct LlaisysQwen2Weights *llaisysQwen2ModelWeights(struct LlaisysQwen2Model *model) noexcept(false) {
         CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null");
         return &model->weights;
     }
 
-    void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model) {
+    void llaisysQwen2ModelReset(struct LlaisysQwen2Model *model) noexcept(false) {
         CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null");
         model->model->reset();
     }
@@ -110,7 +110,7 @@ __C {
     int64_t llaisysQwen2ModelInfer(
         struct LlaisysQwen2Model *model,
         int64_t *token_ids,
-        size_t ntoken) {
+        size_t ntoken) noexcept(false) {
         CHECK_ARGUMENT(model != nullptr, "Qwen2: model must not be null");
         CHECK_ARGUMENT(token_ids != nullptr, "Qwen2: token_ids must not be null");
         CHECK_ARGUMENT(ntoken > 0, "Qwen2: ntoken must be positive");
