@@ -351,7 +351,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 
 - `未完成`：尚未开始实现，或尚未通过该子任务的全部独立验收。
 - `已完成`：对应实现、官方测试、必要的严格补充验证及直接相关 CPU 回归均已通过。
-- Task 4 分析和拆分已完成；T4-01 已开始证据调查，但尚未满足双平台冻结条件。
+- Task 4 分析和拆分已完成；T4-01 已冻结双平台（NVIDIA A800 + 沐曦 MetaX C500）并闭合 `rearrange` 范围（用户决定保持未实现、不计入 Task 4 范围）。
 - 后续仍遵守一次只推进一个独立子任务；依赖顺序为 T4-01 → T4-02 → T4-03 → T4-04 → T4-05 → T4-06～T4-13 → T4-14 → T4-15 → T4-16 → T4-17 → T4-18 → T4-19。
 - 每个硬件相关子任务必须保留两款平台各自的真实运行记录；第一款平台的结果不能替代第二款平台验收。
 
@@ -360,14 +360,15 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 - `xmake.lua` 已有 `--nv-gpu`、`ENABLE_NVIDIA_API` 和 `includes("xmake/nvidia.lua")`，但 `xmake/nvidia.lua` 尚不存在；当前 CUDA 开关无法形成完整构建。
 - `src/device/nvidia/` 已有 Runtime/Resource 骨架，不应重复设计；Runtime 全部接口仍为占位实现，且 `memcpyAsync` 当前缺少公共 ABI 要求的 Stream 参数。
 - Add、Argmax、Embedding、Linear、RMSNorm、RoPE、Self-Attention、SwiGLU 的派发层均已有 NVIDIA 分支，但仍是 `TO_BE_IMPLEMENTED()`，也没有 `src/ops/*/nvidia/` 实现。
-- 当前公共设备枚举和 Python/官方测试只暴露 `LLAISYS_DEVICE_NVIDIA` / `--device nvidia`。默认方案是让两款物理平台复用同一逻辑 CUDA backend；只有 T4-01 证实第二平台无法复用兼容 ABI 时，才最小化增加厂商构建适配，不预先扩张公共 API。
-- 平台 A 固定为 Nvidia；平台 B 必须在 T4-01 从天数、摩尔、沐曦中结合实际获批算力和 SDK 后确定。没有真实硬件和工具链的信息时不臆选第二平台。
+- 当前公共设备枚举和 Python/官方测试只暴露 `LLAISYS_DEVICE_NVIDIA` / `--device nvidia`。T4-01 已实机证实平台 B（沐曦 MetaX C500，MACA cu-bridge）可复用同一逻辑 CUDA backend，仅需构建层适配（T4-02 将 CUDA 编译器从 nvcc 切换为 mxcc/cucc），不新增公共设备类型或厂商分支。
+- 平台 A 固定为 Nvidia（node4 双 A800 80GB）；平台 B 已冻结为当前环境的沐曦 MetaX C500（MACA 3.5.3.20 + cu-bridge），有真实硬件、SDK、编译器、BLAS 与 PyTorch reference 实测证据。
 - `Context` 当前存在 GPU 启用后必须验证的生命周期风险：`_current_runtime` 未显式初始化，`setDevice` 修改 Runtime vector 副本，且 Runtime 在激活目标设备前创建 Stream。
 - Qwen2 C API、Python 构造和权重检查目前明确限制 CPU；KV Cache 扩容/写入使用 `std::memcpy`，最终 argmax 直接解引用 Tensor 地址，均不能用于设备指针。
 - 当前 CUDA 官方测试存在覆盖缺口，不能利用这些缺口获得 PASS：Runtime 会在零设备时静默跳过；Embedding 没有断言比较结果；Argmax 只要求值或索引之一正确；Linear 不测无 bias；Add、RoPE、SwiGLU 不测模型使用的原地路径；Self-Attention 的 GPU reference mask 还需核对设备放置。
 - `test/test_ops.py` 实际不存在，算子回归必须逐个运行现有 8 个 `test/ops/*.py` 脚本。
-- `rearrange` 虽有公共入口和源码目录，但 README 没有定义其语义，CPU 仍未实现、没有官方测试且 Qwen2 不使用。T4-01 必须向官方/导师确认其 Task 4 范围；在语义未确认前不自行设计实现。若确认必需，应先在本文件新增单独、可参考对照的子任务，再开始代码。
+- `rearrange` 虽有公共入口和源码目录，但 README 没有定义其语义，CPU 仍未实现、没有官方测试且 Qwen2 不使用。第二轮调查经 GitHub API 全树搜索确认 InfiniTensor/InfiniLM 上游也不存在该算子；用户已于 2026-08-09 决定**保持未实现**，不作为 Task 4 范围，不猜测语义。Task 4 可审计算子范围确定为 Add + 7 个正式算子共 8 个。
 - 当前开发节点 `node4` 的默认沙箱不暴露 `/dev/nvidia*`，但经获批的只读设备探针已确认宿主 NVIDIA Runtime 和两张 A800 均可实际运行；后续 GPU 验证必须使用同等级设备权限，不能把沙箱内零设备误报为平台状态。
+- 2026-08-08 第二轮调查发现当前工作环境（容器 `cf50adb0c87a`）是可直接运行的 **沐曦 MetaX 平台 B 环境**：`/dev/mxcd` 设备节点存在，`mx-smi` 报告 1 张 MetaX C500，PyTorch `2.8.0+metax3.5.3.9` 的 `torch.cuda` 实测可用；MACA 3.5.3.20（`/opt/maca`）提供 mxcc 编译器与 cu-bridge CUDA 兼容层，`mxcc -x maca` 可编译并运行标准 CUDA kernel。该环境没有 NVIDIA 设备、没有 xmake、没有 github 外网，目标 `DeepSeek-R1-Distill-Qwen-1.5B` 模型也尚未可见，属于 T4-02/T4-15 前的平台 B 工程前置。
 - T3-12 的实际 Ubuntu/Windows GitHub Actions 已确认通过，可作为 Task 4 开发基线。
 
 ## 子任务
@@ -387,22 +388,33 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
   - 平台 B 尚未冻结：本机没有发现天数、摩尔或沐曦设备节点、SDK、编译器、管理工具、BLAS 或 PyTorch 扩展；Slurm 的 6 个节点仅登记无厂商类型的 `gpu:2`，没有平台/SDK/有效期证据。一次 node6 的只读作业探针因 Slurm `Error generating job credential` 未能启动，且没有遗留作业；不能据此臆选第二平台。
   - 当前仓库的公共设备枚举、Runtime 派发、Python 和测试只定义 CPU/NVIDIA。平台 A 明确复用 `LLAISYS_DEVICE_NVIDIA`；平台 B 是否可复用该逻辑 ABI，必须在取得具体平台及兼容 SDK 后判断，目前不新增公共设备类型或厂商分支。
   - `README_ZN.md` 的 Task 2 明确列出 7 个正式算子，Task 4 CI 再覆盖 Add，共 8 个；全文没有定义 `rearrange`，仓库也没有其测试，Qwen2 不调用它。当前可审计范围因此是 Add 加 7 个正式算子，但 Task 4 的“每个算子目录”措辞仍有歧义；在取得官方/导师书面确认前，不猜测 `rearrange` 语义或实现它。
+- **第二轮调查结果（2026-08-08，平台 B 证据冻结）**：
+  - 平台 B 已冻结为当前工作环境中的 **沐曦 MetaX C500**：`/dev/mxcd` 设备节点存在，`mx-smi` 2.2.12 实测报告 1 张可见、GPU State Available、Kernel Mode Driver 3.8.30、BIOS 1.33.5.0；PyTorch 报告 cc (8,0)、SM 104、可见显存约 16.3 GB（板载 64 GB，切片配额）。
+  - SDK 为 MACA 3.5.3.20（`/opt/maca` → `/opt/maca-3.5.3`），含 mxgpu_llvm/mccompiler/mcruntime/mcblas/mcblasLt/mcdnn/mccl/mcfft/mcsparse 等组件；编译器为 mxcc 1.0.0（clang-based，metaxgpu/xcore1000 后端）。MACA 自带 **cu-bridge** CUDA 兼容层（`/opt/maca-3.5.3/tools/cu-bridge/`）：提供 cuda_runtime.h、cublas_v2.h、cublasLt.h、cudnn.h 等完整 CUDA 头文件，`libcuda.so`→`libsymbol_cu.so` 导出 cudaMalloc/cudaMemcpy/cudaMemcpyAsync/cudaStreamCreate/cudaDeviceSynchronize 等 553 个 CUDA 符号，另有 `cucc` 编译包装脚本和 CMake 模块（FindCUDA/FindMACA）。
+  - reference 路径实机验证：PyTorch `2.8.0+metax3.5.3.9` 的 `torch.cuda` 看到 1 张 MetaX C500；F32、F16、BF16 矩阵乘全部正确，`torch.cuda.is_bf16_supported()` 为 True。
+  - ABI 复用实机验证：用 `mxcc -x maca -offload-arch native -I<cu-bridge/include> <src>.cu -o <out> --maca-path=/opt/maca -L/opt/maca/lib -lsymbol_cu -lruntime_cu` 编译标准 CUDA vector-add kernel，链接并实际运行成功（`1+2=3` 正确，进程退出码 0）。结论：**平台 B 可复用现有 `LLAISYS_DEVICE_NVIDIA` 逻辑 backend 与 CUDA 源码，只需最小构建层适配**（T4-02 将 CUDA 编译器从 nvcc 切换为 mxcc/cucc，使用 cu-bridge include 并链接 `libsymbol_cu`/`libruntime_cu`），无需新增公共设备类型或厂商分支。
+  - 平台 B 工程约束：该环境没有 NVIDIA 设备（无 `/dev/nvidia*`、无 `nvidia-smi`、无 `/usr/local/cuda`）；没有 xmake 且无 github 外网（pip 走内网镜像 `mirrors.aliyun.com`）；目标模型 `DeepSeek-R1-Distill-Qwen-1.5B` 尚未可见（`/public/swiftllm` 不存在）。这三项需要在 T4-02/T4-15 前完成平台 B 的构建工具与模型部署，不阻塞 T4-01 冻结矩阵。
+  - 平台 A 本轮状态：当前沙箱无法重新实机访问 NVIDIA（无 `/dev/nvidia*`）；沿用上一轮 node4 宿主探针证据（2×A800、`torch.cuda`/cuBLAS 三 dtype 实测通过）作为平台 A 冻结依据，T4-03 起的平台 A 实机验收仍需同等级设备权限。
+  - `rearrange` 范围依据：官方 `README_ZN.md` 的 Task 4 全文未定义 `rearrange`；官方 CI（`.github/workflows/build.yaml`）的 Assignment-2 步骤只运行 add/argmax/embedding/linear/rms_norm/rope/self_attention/swiglu 共 8 个算子脚本，不含 `rearrange`；`rearrange` 无 CPU 实现、无官方测试、Qwen2 不调用，且经 GitHub API 全树搜索确认 InfiniTensor/InfiniLM 上游也不存在该算子。用户 2026-08-09 决定**保持未实现**、不计入 Task 4 范围；可审计范围为 Add 加 7 个正式算子共 8 个。
 - **当前验收矩阵**：
 
   | 项目 | 平台 A | 平台 B |
   | --- | --- | --- |
-  | 厂商/设备/数量 | NVIDIA A800 80GB PCIe × 2（node4） | 待从天数、摩尔、沐曦中确定 |
-  | 驱动 | 550.144.03 | 未提供 |
-  | Runtime / SDK | CUDA driver API 12.4；Toolkit / Runtime 12.8 | 未提供 |
-  | 编译器 | nvcc 12.8.61；GCC 14.2.1；Clang 19.1.7；Xmake 3.0.9-dev | 未提供 |
-  | BLAS | cuBLAS 12.8.3.14，已实际创建 handle | 未提供 |
-  | reference | PyTorch 2.10.0+cu128 / `torch.cuda`，2 卡三 dtype 实测通过 | 未提供 |
-  | LLAISYS 逻辑 ABI | `LLAISYS_DEVICE_NVIDIA` / `--device nvidia` | 待具体 SDK 验证后决定是否复用 |
-  | 计划构建命令 | `xmake f --nv-gpu=y -cv && xmake && xmake install` | 待平台/SDK 确定 |
-  | 算力有效期 | 2026-08-08 当日可运行；未提供到期时间 | 未提供 |
+  | 厂商/设备/数量 | NVIDIA A800 80GB PCIe × 2（node4） | 沐曦 MetaX C500 × 1（当前环境；板载 64 GB，切片约 16.3 GB） |
+  | 驱动 | 550.144.03 | Kernel Mode Driver 3.8.30；`/opt/mxdriver` 3.5.3.11 |
+  | Runtime / SDK | CUDA driver API 12.4；Toolkit / Runtime 12.8 | MACA 3.5.3.20（`/opt/maca`）+ cu-bridge CUDA 兼容层（`libsymbol_cu.so` 导出 553 个 CUDA 符号） |
+  | 编译器 | nvcc 12.8.61；GCC 14.2.1；Clang 19.1.7；Xmake 3.0.9-dev | mxcc 1.0.0（`-x maca -offload-arch native`）；Xmake 尚未部署 |
+  | BLAS | cuBLAS 12.8.3.14，已实际创建 handle | mcblas / mcblasLt 3.5.3.20（cu-bridge 提供 cublas_v2.h 兼容头） |
+  | reference | PyTorch 2.10.0+cu128 / `torch.cuda`，2 卡三 dtype 实测通过 | PyTorch 2.8.0+metax3.5.3.9 / `torch.cuda`，1 卡三 dtype 实测通过 |
+  | LLAISYS 逻辑 ABI | `LLAISYS_DEVICE_NVIDIA` / `--device nvidia` | 复用 `LLAISYS_DEVICE_NVIDIA`；已实机编译并运行 CUDA kernel 验证 |
+  | 计划构建命令 | `xmake f --nv-gpu=y -cv && xmake && xmake install` | 同一命令 + mxcc/cu-bridge 构建适配（T4-02）；xmake 需先在平台 B 部署 |
+  | 算力有效期 | 2026-08-08 当日可运行；未提供到期时间 | 2026-08-08 当日实测可用；未提供到期时间 |
 
-- **阻塞项**：需要用户提供一款已获批的天数、摩尔或沐曦平台 B 的访问方式/有效期及 SDK 环境，并提供官方/导师对 `rearrange` 是否纳入 Task 4 的书面结论。两项闭合后才能完成矩阵并决定平台 B 的 ABI/构建适配。
-- **当前状态**：未完成（平台 A 与 Task 3 CI 基线已确认；平台 B、算力有效期和 `rearrange` 书面范围仍缺失）
+- **阻塞项**：已全部闭合。
+  - 平台 B 已由当前工作环境实机证据闭合（沐曦 MetaX C500，`torch.cuda` 与 CUDA kernel 均实测运行）。
+  - `rearrange` 范围已由用户于 2026-08-09 决定：**保持未实现**、不计入 Task 4 范围（该算子无任何语义定义，见上）；不猜测实现。
+  - 平台 B 的构建工具链（xmake）和目标模型部署属于 T4-02/T4-15 的工程前置，不属于 T4-01 验收内容。
+- **当前状态**：已完成（双平台矩阵冻结、逻辑 backend 复用结论实机验证、`rearrange` 范围闭合）
 
 ### T4-02 接通可开关的双平台 CUDA 构建
 
@@ -413,7 +425,19 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
   - 新建 `xmake/nvidia.lua`
   - 仅当 T4-01 证明必要时新增最小厂商构建适配文件
 - **验收方法**：在两平台分别从干净 Xmake 配置执行 `xmake f --nv-gpu=y -cv && xmake && xmake install`，最终 Python 包能加载对应共享库；使用 `--nv-gpu=n` 从干净配置构建安装成功、无需 CUDA SDK，且 `python test/test_runtime.py --device cpu` 通过；检查不同平台构建缓存没有混用。此阶段只打通构建，不实现 Runtime 或算子算法。
-- **当前状态**：未完成
+- **本轮实现（2026-08-09，平台 B）**：
+  - 平台 B 构建工具前置已闭合：通过 `mamba install -y -c conda-forge xmake`（tuna 清华 conda-forge 内网镜像）部署 xmake 3.0.9，位于 `/opt/conda/bin/xmake`；因沙箱以 root 运行，需 `export XMAKE_ROOT=y`。
+  - 新建 `xmake/nvidia.lua`：核心是 `option("maca-cuda")` 的 `on_check`——当 `--nv-gpu=y` 且未显式 `--cuda=...` 时，检测 MACA cu-bridge（`mxcc` + `cu-bridge/include` + `cucc`），若存在则在 `$HOME/.cache/llaisys/maca-cuda/` 幂等地合成最小 "CUDA SDK" shim：`bin/nvcc` 为调用 `cucc` 的 bash 包装（cucc 自动加 `-x maca` 把 nvcc 风格参数转给 mxcc），`include/` 软链到 cu-bridge/include（满足 cucc 强制 `__macro_mxcc.h` 的包含路径），`lib64/libcudart_static.a`/`libcudadevrt.a` 为空归档（满足 xmake CUDA 规则追加的 `-lcudart_static -lcudadevrt` 链接行）。随后 `config.set("cuda", shim)` 让 xmake 内置 CUDA 机制用同一套机器驱动 mxcc/cucc。
+  - `llaisys-device-nvidia` / `llaisys-ops-nvidia` 静态目标：编译 `src/device/nvidia/*.cu` 与 `src/ops/*/nvidia/*.cu`，`add_cuflags("-Xcompiler -fPIC", {force = true})` 保证 PIC（mxcc 自动旗标检查会误丢该参数）；`on_config` 仅当 `maca_cu_bridge` 时追加 `-L/opt/maca/lib -lsymbol_cu -lruntime_cu` 与 rpath，NVIDIA 平台自然不链接 MACA 库。
+  - `xmake.lua`：`llaisys-device` 与 `llaisys-ops` 在 `has_config("nv-gpu")` 时条件依赖上述两个 NVIDIA 目标；`--nv-gpu=n` 完全不触碰 CUDA。
+  - `src/device/nvidia/nvidia_runtime_api.cu`：修正 `memcpyAsync` ABI 签名（补 `llaisysStream_t stream` 第 5 参，与公共 `memcpy_async_api` 对齐），是 T4-02 的构建阻塞项；函数体仍为 `TO_BE_IMPLEMENTED()`，完整实现属于 T4-03。
+- **平台 B 验证记录（2026-08-09）**：
+  - `--nv-gpu=y` 干净构建：`xmake f --nv-gpu=y -cv && xmake && xmake install` 成功，`python/llaisys/libllaisys/libllaisys.so` 生成并被 Python 加载，`ldd` 解析到 `/opt/maca/lib/libruntime_cu.so`、`libmcruntime.so` 等 MACA 依赖；`python test/test_runtime.py --device cpu` 在 CUDA 构建下通过。
+  - `--nv-gpu=n` 干净构建：重新 `xmake f` 后安装成功，**无需 CUDA SDK/MACA**；`test/test_runtime.py --device cpu` 通过；CPU 回归全部通过：`add`、`argmax`、`embedding`、`linear`、`rms_norm`、`rope`、`self_attention`、`swiglu`（8/8 算子）与 `test_tensor.py` 均 `Test passed!`。`ldd` 确认 CPU 构建无任何 MACA 依赖。
+  - 缓存隔离：`build/` 与 `.xmake/` 均为各 checkout 本地、gitignore；两平台各自执行自己的 `xmake f`，未观察到配置混用。
+- **平台 A 状态**：nvidia.lua 的 NVIDIA 路径走 xmake 内置 CUDA 机制（自动检测 `/usr/local/cuda*` 或 `--cuda=...` 驱动 nvcc），无需 shim；当前沙箱无 `/dev/nvidia*` 无法实机执行，平台 A 的 `--nv-gpu=y` 实机验收需 T4-03 起的同等级设备权限。
+- **已知边界**：`--device nvidia` 运行 `test_runtime.py` 抛 `TO_BE_IMPLEMENTED`（预期，T4-03 前不实现 Runtime 算法）；CUDA 构建下 CPU 算子回归会因 `src/core/context/context.cpp:9-21` 的设备枚举调用 NVIDIA `getDeviceCount()` 而崩溃，已确认根因并归入 T4-05（Context/Runtime/Resource/Tensor 设备生命周期），T4-02 不越界修复。
+- **当前状态**：已完成（平台 B 双开关均验证；平台 A 构建路径已实现、实机验收待设备权限）
 
 ### T4-03 实现 Nvidia CUDA Runtime API
 
@@ -631,8 +655,8 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 
 ## 当前已知 Task 4 风险与测试缺口
 
-1. 第二款平台尚未由实际算力和 SDK 确定；T4-01 是后续实现的硬前置，不能把 Nvidia 编译成功等同于满足双平台要求。
-2. CUDA build 当前在 Runtime 算法之前就会受缺失的 `xmake/nvidia.lua` 和 `memcpyAsync` ABI 不匹配阻塞，因此构建、Runtime、Context 必须按顺序独立闭环。
+1. 第二款平台已由当前环境的沐曦 MetaX C500 实机证据确定，T4-01 的双平台冻结已完成；但平台 B 的 CUDA 兼容构建（xmake + mxcc/cu-bridge）、工具链与目标模型部署仍需在 T4-02/T4-15 完成并分别在两平台独立验收，不能把单一平台编译成功等同于满足双平台要求。
+2. CUDA build 的构建阻塞项（缺失 `xmake/nvidia.lua`、`memcpyAsync` ABI 不匹配）已在 T4-02 全部闭合；剩余阻塞来自 Runtime 算法与 Context 生命周期，构建、Runtime、Context 仍须按顺序独立闭环。
 3. 现有官方 Runtime 脚本在零设备时仍会报告通过，不能作为唯一验收；必须增加设备数非零、Stream、async、Host 分配释放和多设备严格检查。
 4. Embedding、Argmax 以及模型使用的原地/无 bias 路径存在已知测试缺口；Task 4 必须增加更严格验证，不得利用弱断言。
 5. `test/ops/self_attention.py` 的 causal mask 创建未显式放在 query 设备上，GPU reference 可能先于后端失败；必须保留根因证据并使用严格 reference，不得通过跳过测试处理。
@@ -642,7 +666,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 ## 当前总状态
 
 - Task 4 需求分析与任务拆分：**已完成**
-- Task 4 代码实现：**未开始**
-- 双平台选择：**未完成（平台 A 已冻结为 node4 的双 NVIDIA A800 80GB；平台 B 无实机/SDK/有效期证据）**
-- 已完成阶段：无。
-- 下一个阶段：仍为 T4-01 冻结双平台、工具链与验收矩阵；取得平台 B 访问资料和 `rearrange` 书面范围结论前，不开始 T4-02。
+- Task 4 代码实现：**进行中（构建层已完成，Runtime/算子算法未开始）**
+- 双平台选择：**平台 A 已冻结为 node4 的双 NVIDIA A800 80GB；平台 B 已冻结为当前环境的沐曦 MetaX C500（MACA 3.5.3.20 + cu-bridge，CUDA kernel 实机运行验证）**
+- 已完成阶段：T4-01、T4-02（平台 B 双开关实机验证；平台 A 构建路径已实现、实机验收待设备权限）。
+- 下一个阶段：T4-03 实现 Nvidia CUDA Runtime API（需 node4 同等级设备权限做平台 A 实机验收）。

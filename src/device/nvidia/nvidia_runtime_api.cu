@@ -49,7 +49,7 @@ void memcpySync(void *dst, const void *src, size_t size, llaisysMemcpyKind_t kin
     TO_BE_IMPLEMENTED();
 }
 
-void memcpyAsync(void *dst, const void *src, size_t size, llaisysMemcpyKind_t kind) {
+void memcpyAsync(void *dst, const void *src, size_t size, llaisysMemcpyKind_t kind, llaisysStream_t stream) {
     TO_BE_IMPLEMENTED();
 }
 
