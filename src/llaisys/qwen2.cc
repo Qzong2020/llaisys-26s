@@ -1,4 +1,5 @@
 #include "llaisys/models/qwen2.h"
+#include "llaisys/runtime.h"
 
 #include "llaisys_tensor.hpp"
 
@@ -87,9 +88,18 @@ __C {
         int ndevice) noexcept(false) {
         CHECK_ARGUMENT(meta != nullptr, "Qwen2: meta must not be null");
         CHECK_ARGUMENT(device_ids != nullptr, "Qwen2: device_ids must not be null");
-        CHECK_ARGUMENT(ndevice == 1, "Qwen2: Task 3 supports exactly one device");
-        CHECK_ARGUMENT(device == LLAISYS_DEVICE_CPU, "Qwen2: Task 3 supports CPU only");
+        CHECK_ARGUMENT(ndevice == 1, "Qwen2: exactly one device is required");
+#ifdef ENABLE_NVIDIA_API
+        CHECK_ARGUMENT(device == LLAISYS_DEVICE_CPU || device == LLAISYS_DEVICE_NVIDIA,
+                       "Qwen2: unsupported device type");
+#else
+        CHECK_ARGUMENT(device == LLAISYS_DEVICE_CPU,
+                       "Qwen2: requested device is not available in this build");
+#endif
         CHECK_ARGUMENT(device_ids[0] >= 0, "Qwen2: device id must not be negative");
+        const auto *runtime_api = llaisysGetRuntimeAPI(device);
+        CHECK_ARGUMENT(device_ids[0] < runtime_api->get_device_count(),
+                       "Qwen2: device id is out of range");
         return new LlaisysQwen2Model(*meta, device, device_ids[0]);
     }
 

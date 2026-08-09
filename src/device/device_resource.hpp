@@ -14,9 +14,13 @@ public:
         : _device_type(device_type),
           _device_id(device_id) {
     }
-    ~DeviceResource() = default;
+    virtual ~DeviceResource() noexcept = default;
 
     llaisysDeviceType_t getDeviceType() const { return _device_type; }
     int getDeviceId() const { return _device_id; };
 };
+
+DeviceResource *createDeviceResource(llaisysDeviceType_t device_type,
+                                     int device_id,
+                                     llaisysStream_t stream);
 } // namespace llaisys::device

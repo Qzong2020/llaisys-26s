@@ -64,19 +64,22 @@ exec "%s" "$@"
     end)
 option_end()
 
--- link the MACA cu-bridge runtime only when the active CUDA SDK is the shim
-local function add_maca_runtime_links(target)
+-- Link the active platform's CUDA runtime/BLAS dependencies through both static targets.
+local function add_cuda_runtime_links(target)
     import("core.project.config")
     if config.get("maca_cu_bridge") then
         local libdir = path.join(os.getenv("MACA_PATH") or "/opt/maca", "lib")
-        target:add("linkdirs", libdir)
-        target:add("links", "symbol_cu", "runtime_cu")
-        target:add("rpathdirs", libdir)
+        target:add("linkdirs", libdir, {public = true})
+        target:add("links", "symbol_cu", "runtime_cu", {public = true})
+        target:add("rpathdirs", libdir, {public = true})
+    else
+        target:add("links", "cublas", {public = true})
     end
 end
 
 target("llaisys-device-nvidia")
     set_kind("static")
+    set_values("cuda.rdc", false)
     set_languages("cxx17")
     set_warnings("all", "error")
     if not is_plat("windows") then
@@ -86,12 +89,14 @@ target("llaisys-device-nvidia")
     add_files("../src/device/nvidia/*.cu")
     add_cuflags("-Xcompiler -fPIC", {force = true})
 
-    on_config(add_maca_runtime_links)
+    on_config(add_cuda_runtime_links)
     on_install(function (target) end)
 target_end()
 
 target("llaisys-ops-nvidia")
     set_kind("static")
+    set_values("cuda.rdc", false)
+    add_cugencodes("sm_80")
     add_deps("llaisys-tensor")
     set_languages("cxx17")
     set_warnings("all", "error")
@@ -100,7 +105,8 @@ target("llaisys-ops-nvidia")
     end
 
     add_files("../src/ops/*/nvidia/*.cu")
+    add_cuflags("-Xcompiler -fPIC", {force = true})
 
-    on_config(add_maca_runtime_links)
+    on_config(add_cuda_runtime_links)
     on_install(function (target) end)
 target_end()

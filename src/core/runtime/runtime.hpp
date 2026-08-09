@@ -1,6 +1,7 @@
 #pragma once
 #include "../core.hpp"
 
+#include "../../device/device_resource.hpp"
 #include "../../device/runtime_api.hpp"
 #include "../allocator/allocator.hpp"
 
@@ -11,6 +12,7 @@ private:
     int _device_id;
     const LlaisysRuntimeAPI *_api;
     MemoryAllocator *_allocator;
+    llaisys::device::DeviceResource *_resource;
     bool _is_active;
     void _activate();
     void _deactivate();
@@ -35,6 +37,7 @@ public:
     bool isActive() const;
 
     const LlaisysRuntimeAPI *api() const;
+    llaisys::device::DeviceResource &resource() const;
 
     storage_t allocateDeviceStorage(size_t size);
     ;

@@ -109,17 +109,37 @@ void Model::ensureCacheCapacity(size_t required) {
     new_keys.reserve(_meta.nlayer);
     new_values.reserve(_meta.nlayer);
 
-    const size_t layer_prefix_bytes =
-        _cache.length * _meta.nkvh * _meta.dh * _weights.in_embed->elementSize();
     for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
-        auto key = createTensor({new_capacity, _meta.nkvh, _meta.dh});
-        auto value = createTensor({new_capacity, _meta.nkvh, _meta.dh});
-        if (_cache.length > 0) {
-            std::memcpy(key->data(), _cache.keys[layer]->data(), layer_prefix_bytes);
-            std::memcpy(value->data(), _cache.values[layer]->data(), layer_prefix_bytes);
+        new_keys.emplace_back(
+            createTensor({new_capacity, _meta.nkvh, _meta.dh}));
+        new_values.emplace_back(
+            createTensor({new_capacity, _meta.nkvh, _meta.dh}));
+    }
+
+    if (_cache.length > 0) {
+        const size_t layer_prefix_bytes =
+            _cache.length * _meta.nkvh * _meta.dh
+          * _weights.in_embed->elementSize();
+        if (_device_type == LLAISYS_DEVICE_CPU) {
+            for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
+                std::memcpy(new_keys[layer]->data(), _cache.keys[layer]->data(),
+                            layer_prefix_bytes);
+                std::memcpy(new_values[layer]->data(), _cache.values[layer]->data(),
+                            layer_prefix_bytes);
+            }
+        } else {
+            core::context().setDevice(_device_type, _device_id);
+            auto &runtime = core::context().runtime();
+            // Keep the old cache storage alive until every prefix copy completes.
+            for (size_t layer = 0; layer < _meta.nlayer; ++layer) {
+                runtime.api()->memcpy_sync(
+                    new_keys[layer]->data(), _cache.keys[layer]->data(),
+                    layer_prefix_bytes, LLAISYS_MEMCPY_D2D);
+                runtime.api()->memcpy_sync(
+                    new_values[layer]->data(), _cache.values[layer]->data(),
+                    layer_prefix_bytes, LLAISYS_MEMCPY_D2D);
+            }
         }
-        new_keys.emplace_back(std::move(key));
-        new_values.emplace_back(std::move(value));
     }
 
     _cache.keys = std::move(new_keys);
@@ -217,8 +237,19 @@ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
         auto value_write = _cache.values[layer]->slice(0, cache_start, cache_end);
         const size_t new_kv_bytes = ntoken * _meta.nkvh * _meta.dh
                                   * _buffers.key->elementSize();
-        std::memcpy(key_write->data(), key_heads->data(), new_kv_bytes);
-        std::memcpy(value_write->data(), value_heads->data(), new_kv_bytes);
+        if (_device_type == LLAISYS_DEVICE_CPU) {
+            std::memcpy(key_write->data(), key_heads->data(), new_kv_bytes);
+            std::memcpy(value_write->data(), value_heads->data(), new_kv_bytes);
+        } else {
+            core::context().setDevice(_device_type, _device_id);
+            auto &runtime = core::context().runtime();
+            runtime.api()->memcpy_async(
+                key_write->data(), key_heads->data(), new_kv_bytes,
+                LLAISYS_MEMCPY_D2D, runtime.stream());
+            runtime.api()->memcpy_async(
+                value_write->data(), value_heads->data(), new_kv_bytes,
+                LLAISYS_MEMCPY_D2D, runtime.stream());
+        }
 
         auto cached_keys = _cache.keys[layer]->slice(0, 0, cache_end);
         auto cached_values = _cache.values[layer]->slice(0, 0, cache_end);
@@ -248,8 +279,22 @@ int64_t Model::infer(const int64_t *token_ids, size_t ntoken) {
     ops::linear(_buffers.logits, normalized_last, _weights.out_embed, nullptr);
     ops::argmax(_buffers.max_index, _buffers.max_value, _buffers.logits);
 
+    int64_t max_index;
+    if (_device_type == LLAISYS_DEVICE_CPU) {
+        std::memcpy(&max_index, _buffers.max_index->data(), sizeof(max_index));
+    } else {
+        core::context().setDevice(_device_type, _device_id);
+        auto &runtime = core::context().runtime();
+        auto host_index = runtime.allocateHostStorage(sizeof(max_index));
+        runtime.api()->memcpy_async(
+            host_index->memory(), _buffers.max_index->data(), sizeof(max_index),
+            LLAISYS_MEMCPY_D2H, runtime.stream());
+        runtime.synchronize();
+        std::memcpy(&max_index, host_index->memory(), sizeof(max_index));
+    }
+
     _cache.length = cache_end;
-    return *reinterpret_cast<const int64_t *>(_buffers.max_index->data());
+    return max_index;
 }
 
 void Model::reset() {

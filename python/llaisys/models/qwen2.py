@@ -7,6 +7,7 @@ from typing import Sequence
 from safetensors import safe_open
 
 from ..libllaisys import DataType, DeviceType, LIB_LLAISYS, LlaisysQwen2Meta
+from ..runtime import RuntimeAPI
 
 
 _DTYPE_MAP = {
@@ -155,7 +156,7 @@ def _weight_targets(weights, nlayer):
     return targets
 
 
-def _load_weights(model_path, model, meta):
+def _load_weights(model_path, model, meta, expected_device, expected_device_id):
     weights_ptr = LIB_LLAISYS.llaisysQwen2ModelWeights(model)
     if not weights_ptr:
         raise RuntimeError("Qwen2 backend returned a null weight structure")
@@ -199,8 +200,20 @@ def _load_weights(model_path, model, meta):
                     )
                 if DataType(LIB_LLAISYS.tensorGetDataType(target)) != dtype:
                     raise RuntimeError(f"Qwen2 backend weight '{name}' has wrong dtype")
-                if DeviceType(LIB_LLAISYS.tensorGetDeviceType(target)) != DeviceType.CPU:
-                    raise RuntimeError(f"Qwen2 backend weight '{name}' is not on CPU")
+                target_device = DeviceType(
+                    LIB_LLAISYS.tensorGetDeviceType(target)
+                )
+                if target_device != expected_device:
+                    raise RuntimeError(
+                        f"Qwen2 backend weight '{name}' is on {target_device.name}, "
+                        f"expected {expected_device.name}"
+                    )
+                target_device_id = LIB_LLAISYS.tensorGetDeviceId(target)
+                if target_device_id != expected_device_id:
+                    raise RuntimeError(
+                        f"Qwen2 backend weight '{name}' is on device "
+                        f"{target_device_id}, expected {expected_device_id}"
+                    )
                 if not LIB_LLAISYS.tensorIsContiguous(target):
                     raise RuntimeError(f"Qwen2 backend weight '{name}' is not contiguous")
 
@@ -244,8 +257,13 @@ class Qwen2:
             self._device = DeviceType(device)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Unsupported Qwen2 device: {device!r}") from exc
-        if self._device != DeviceType.CPU:
-            raise ValueError("Task 3 Qwen2 inference supports CPU only")
+        if self._device not in (DeviceType.CPU, DeviceType.NVIDIA):
+            raise ValueError(f"Unsupported Qwen2 device: {self._device!r}")
+        self._device_id = 0
+        if self._device == DeviceType.NVIDIA:
+            device_count = RuntimeAPI(self._device).get_device_count()
+            if device_count <= self._device_id:
+                raise RuntimeError("Qwen2 requested NVIDIA device 0 is not available")
 
         if not self._model_path.is_dir():
             raise FileNotFoundError(
@@ -264,15 +282,23 @@ class Qwen2:
             raise ValueError("Qwen2 config root must be a JSON object")
 
         self._meta = _parse_meta(config)
-        device_ids = (c_int * 1)(0)
+        device_ids = (c_int * 1)(self._device_id)
         self._model = LIB_LLAISYS.llaisysQwen2ModelCreate(
             byref(self._meta), self._device, device_ids, 1
         )
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 backend model")
-        self._loaded_weight_count = _load_weights(
-            self._model_path, self._model, self._meta
-        )
+        try:
+            self._loaded_weight_count = _load_weights(
+                self._model_path,
+                self._model,
+                self._meta,
+                self._device,
+                self._device_id,
+            )
+        except Exception:
+            self.close()
+            raise
 
     def __del__(self):
         model = getattr(self, "_model", None)

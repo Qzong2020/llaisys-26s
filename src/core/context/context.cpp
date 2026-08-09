@@ -17,51 +17,65 @@ Context::Context() {
     for (auto device_type : device_typs) {
         const LlaisysRuntimeAPI *api_ = llaisysGetRuntimeAPI(device_type);
         int device_count = api_->get_device_count();
-        std::vector<Runtime *> runtimes_(device_count);
-        for (int device_id = 0; device_id < device_count; device_id++) {
+        const auto insert_result = _runtime_map.emplace(
+            device_type,
+            std::vector<Runtime *>(device_count, nullptr));
+        ASSERT(insert_result.second, "Runtime map already contains this device type.");
 
-            if (_current_runtime == nullptr) {
-                auto runtime = new Runtime(device_type, device_id);
-                runtime->_activate();
-                runtimes_[device_id] = runtime;
-                _current_runtime = runtime;
-            }
+        if (_current_runtime == nullptr && device_count > 0) {
+            setDevice(device_type, 0);
         }
-        _runtime_map[device_type] = runtimes_;
     }
 }
 
 Context::~Context() {
-    // Destroy current runtime first.
-    delete _current_runtime;
-
     for (auto &runtime_entry : _runtime_map) {
-        std::vector<Runtime *> runtimes = runtime_entry.second;
-        for (auto runtime : runtimes) {
-            if (runtime != nullptr && runtime != _current_runtime) {
+        for (auto &runtime : runtime_entry.second) {
+            if (runtime != nullptr) {
+                if (_current_runtime != nullptr && _current_runtime != runtime) {
+                    _current_runtime->_deactivate();
+                }
                 runtime->_activate();
+                _current_runtime = runtime;
                 delete runtime;
+                runtime = nullptr;
+                _current_runtime = nullptr;
             }
         }
-        runtimes.clear();
     }
-    _current_runtime = nullptr;
     _runtime_map.clear();
 }
 
 void Context::setDevice(llaisysDeviceType_t device_type, int device_id) {
-    // If doest not match the current runtime.
-    if (_current_runtime == nullptr || _current_runtime->deviceType() != device_type || _current_runtime->deviceId() != device_id) {
-        auto runtimes = _runtime_map[device_type];
-        CHECK_ARGUMENT((size_t)device_id < runtimes.size() && device_id >= 0, "invalid device id");
-        if (_current_runtime != nullptr) {
-            _current_runtime->_deactivate();
+    auto runtime_entry = _runtime_map.find(device_type);
+    CHECK_ARGUMENT(runtime_entry != _runtime_map.end(), "invalid device type");
+
+    auto &runtimes = runtime_entry->second;
+    CHECK_ARGUMENT(device_id >= 0 && static_cast<size_t>(device_id) < runtimes.size(), "invalid device id");
+
+    Runtime *target_runtime = runtimes[device_id];
+    if (_current_runtime == target_runtime && target_runtime != nullptr) {
+        return;
+    }
+
+    Runtime *previous_runtime = _current_runtime;
+    if (previous_runtime != nullptr) {
+        previous_runtime->_deactivate();
+    }
+
+    try {
+        if (target_runtime == nullptr) {
+            target_runtime = new Runtime(device_type, device_id);
+            runtimes[device_id] = target_runtime;
         }
-        if (runtimes[device_id] == nullptr) {
-            runtimes[device_id] = new Runtime(device_type, device_id);
+        target_runtime->_activate();
+        _current_runtime = target_runtime;
+    } catch (...) {
+        if (previous_runtime != nullptr) {
+            previous_runtime->_activate();
         }
-        runtimes[device_id]->_activate();
-        _current_runtime = runtimes[device_id];
+        _current_runtime = previous_runtime;
+        throw;
     }
 }
 

@@ -4,6 +4,9 @@
 #include "../../utils.hpp"
 
 #include "cpu/self_attention_cpu.hpp"
+#ifdef ENABLE_NVIDIA_API
+#include "nvidia/self_attention_nvidia.cuh"
+#endif
 
 namespace llaisys::ops {
 void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float scale) {
@@ -24,6 +27,8 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
     size_t kvlen = k->shape()[0];
     size_t nkvh  = k->shape()[1];
 
+    ASSERT(nkvh > 0, "SelfAttention: nkvh must be positive.");
+    ASSERT(kvlen >= qlen, "SelfAttention: kvlen must be at least qlen.");
     ASSERT(nh % nkvh == 0, "SelfAttention: nh must be multiple of nkvh (GQA).");
     ASSERT(k->shape()[2] == hd && v->shape()[2] == hd,
            "SelfAttention: K, V head_dim must match Q head_dim.");
@@ -47,8 +52,10 @@ void self_attention(tensor_t attn_val, tensor_t q, tensor_t k, tensor_t v, float
                                    scale, qlen, kvlen, nh, nkvh, hd, attn_val->dtype());
 #ifdef ENABLE_NVIDIA_API
     case LLAISYS_DEVICE_NVIDIA:
-        TO_BE_IMPLEMENTED();
-        return;
+        return nvidia::self_attention(
+            attn_val->data(), q->data(), k->data(), v->data(),
+            scale, qlen, kvlen, nh, nkvh, hd, attn_val->dtype(),
+            llaisys::core::context().runtime().stream());
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;

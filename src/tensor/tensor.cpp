@@ -5,6 +5,7 @@
 #include <cstring>
 #include <numeric>
 #include <sstream>
+#include <type_traits>
 
 namespace llaisys {
 
@@ -95,7 +96,13 @@ std::string Tensor::info() const {
 
 template <typename T>
 void print_data(const T *data, const std::vector<size_t> &shape, const std::vector<ptrdiff_t> &strides, size_t dim) {
-    if (dim == shape.size() - 1) {
+    if (shape.empty()) {
+        if constexpr (std::is_same_v<T, bf16_t> || std::is_same_v<T, fp16_t>) {
+            std::cout << utils::cast<float>(data[0]) << std::endl;
+        } else {
+            std::cout << data[0] << std::endl;
+        }
+    } else if (dim == shape.size() - 1) {
         for (size_t i = 0; i < shape[dim]; i++) {
             if constexpr (std::is_same_v<T, bf16_t> || std::is_same_v<T, fp16_t>) {
                 std::cout << utils::cast<float>(data[i * strides[dim]]) << " ";
@@ -109,6 +116,22 @@ void print_data(const T *data, const std::vector<size_t> &shape, const std::vect
             print_data(data + i * strides[dim], shape, strides, dim + 1);
         }
     }
+}
+
+size_t tensor_span_elements(const std::vector<size_t> &shape, const std::vector<ptrdiff_t> &strides) {
+    if (shape.empty()) {
+        return 1;
+    }
+
+    size_t span = 1;
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (shape[i] == 0) {
+            return 0;
+        }
+        CHECK_ARGUMENT(strides[i] >= 0, "Negative strides are not supported");
+        span += (shape[i] - 1) * static_cast<size_t>(strides[i]);
+    }
+    return span;
 }
 
 void debug_print(const std::byte *data, const std::vector<size_t> &shape, const std::vector<ptrdiff_t> &strides, llaisysDataType_t dtype) {
@@ -150,16 +173,22 @@ void Tensor::debug() const {
     core::context().setDevice(this->deviceType(), this->deviceId());
     core::context().runtime().api()->device_synchronize();
     std::cout << this->info() << std::endl;
+    if (this->numel() == 0) {
+        return;
+    }
     if (this->deviceType() == LLAISYS_DEVICE_CPU) {
         debug_print(this->data(), this->shape(), this->strides(), this->dtype());
     } else {
-        auto tmp_tensor = create({this->_storage->size()}, this->dtype());
-        core::context().runtime().api()->memcpy_sync(
-            tmp_tensor->data(),
-            this->data(),
-            this->numel() * this->elementSize(),
-            LLAISYS_MEMCPY_D2H);
-        debug_print(tmp_tensor->data(), this->shape(), this->strides(), this->dtype());
+        const size_t span_bytes = tensor_span_elements(this->shape(), this->strides()) * this->elementSize();
+        std::vector<std::byte> host_data(span_bytes);
+        if (span_bytes > 0) {
+            core::context().runtime().api()->memcpy_sync(
+                host_data.data(),
+                this->data(),
+                span_bytes,
+                LLAISYS_MEMCPY_D2H);
+        }
+        debug_print(host_data.data(), this->shape(), this->strides(), this->dtype());
     }
 }
 
@@ -281,8 +310,7 @@ void Tensor::load(const void *src_) {
         this->data(),
         src_,
         this->numel() * this->elementSize(),
-        LLAISYS_MEMCPY_H2D
-    );        
+        this->deviceType() == LLAISYS_DEVICE_CPU ? LLAISYS_MEMCPY_H2H : LLAISYS_MEMCPY_H2D);
 }
 
 tensor_t Tensor::contiguous() const {
