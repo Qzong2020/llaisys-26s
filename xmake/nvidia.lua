@@ -70,7 +70,9 @@ local function add_cuda_runtime_links(target)
     if config.get("maca_cu_bridge") then
         local libdir = path.join(os.getenv("MACA_PATH") or "/opt/maca", "lib")
         target:add("linkdirs", libdir, {public = true})
-        target:add("links", "symbol_cu", "runtime_cu", {public = true})
+        -- cu-bridge maps cublas* to mcblas*; without libmcblas the shared library
+        -- fails to load with undefined mcblas{GemmEx,Create,...} symbols.
+        target:add("links", "symbol_cu", "runtime_cu", "mcblas", {public = true})
         target:add("rpathdirs", libdir, {public = true})
     else
         target:add("links", "cublas", {public = true})

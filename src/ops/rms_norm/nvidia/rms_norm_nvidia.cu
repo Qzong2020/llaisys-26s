@@ -54,8 +54,16 @@ __device__ __nv_bfloat16 fromFloat(float value) {
     return __float2bfloat16_rn(value);
 }
 
+// The hardware warp is 32 lanes on every target (compute capability 8.0).
+// We hardcode 32 instead of the `warpSize` constant: on the MetaX MACA
+// toolchain (cu-bridge/mxcc) `warpSize` compiles to 64 while the real warp is
+// 32, so `warpSize / 2` yields an extra invalid __shfl_down_sync step that
+// doubles (and stacks) the partial sums. nvcc also uses 32, so this matches
+// the NVIDIA build exactly.
+constexpr unsigned int kThreadsPerWarp = 32;
+
 __device__ float warpReduceSum(float value) {
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+    for (int offset = kThreadsPerWarp / 2; offset > 0; offset >>= 1) {
         value += __shfl_down_sync(0xffffffff, value, offset);
     }
     return value;
@@ -64,15 +72,16 @@ __device__ float warpReduceSum(float value) {
 __device__ float blockReduceSum(float value) {
     __shared__ float warp_sums[32];
 
-    const unsigned int lane = threadIdx.x % warpSize;
-    const unsigned int warp = threadIdx.x / warpSize;
+    const unsigned int lane = threadIdx.x % kThreadsPerWarp;
+    const unsigned int warp = threadIdx.x / kThreadsPerWarp;
     value = warpReduceSum(value);
     if (lane == 0) {
         warp_sums[warp] = value;
     }
     __syncthreads();
 
-    const unsigned int warp_count = (blockDim.x + warpSize - 1) / warpSize;
+    const unsigned int warp_count =
+        (blockDim.x + kThreadsPerWarp - 1) / kThreadsPerWarp;
     value = threadIdx.x < warp_count ? warp_sums[lane] : 0.0f;
     if (warp == 0) {
         value = warpReduceSum(value);
