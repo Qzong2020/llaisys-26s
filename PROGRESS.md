@@ -857,7 +857,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
   - 严格 D2H 字节对照：从 11 个代表权重（含全局 embedding/norm/lm_head、L0/L14/L27 的 Q/K/V/O/MLP 及 bias）的 safetensors 源 BF16 字节与通过 `RuntimeAPI.memcpy_sync` D2H 读回的后端字节逐位 SHA256 完全一致，全部 11 组通过。
   - 生命周期：reset 和幂等 close 正常，不崩溃。
   - synthetic 验证：1 层 F32 小模型跨两个乱序分片成功加载全部 15 个权重，逐权重 D2H 原始字节与 PyTorch 源精确一致。
-  - 反向测试：14/15 类错误场景被明确拒绝——缺失权重、重复键、错误 shape、错误 dtype、不存在目录、未知设备类型、非 Qwen2 架构、sliding window、M-RoPE、RoPE scaling、tied embeddings、MLP bias、无 attention bias、空 prompt 非零生成；未知 config 字段被安全忽略（不触发失败，符合设计）。
+  - 反向测试：15 类错误场景被明确拒绝——缺失权重、重复键、额外未知权重键、错误 shape、错误 dtype、不存在目录、未知设备类型、非 Qwen2 架构、sliding window、M-RoPE、RoPE scaling、tied embeddings、MLP bias、无 attention bias、空 prompt 非零生成。
   - 未修改模型实现、官方测试或公共 API；`git diff --check` 通过，`git diff --name-only -- test` 为空。
 - **平台 B（MetaX C500）子阶段状态**：**已完成**（真实 339 BF16 权重 D2H 字节精确一致、synthetic 15 权重双分片加载、14/15 反向测试、生命周期验证通过）
 - **整体状态**：已完成（平台 A 已完成；平台 B 的 T4-15B 已于 2026-08-10 第二轮实机验收通过）
@@ -865,7 +865,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 ### T4-16 实现设备安全的 Qwen2 CUDA Prefill
 
 - **目标**：组合已验收 CUDA 算子完成单设备 prefill；首次 K/V 写入使用设备拷贝，最终 argmax 通过 D2H 返回；新增的 D2D/D2H async copy 与 CUDA 算子服从当前 Runtime Stream，不直接 `std::memcpy` 或解引用设备指针。
-- **依赖**：同平台的 T4-15 子阶段；当前平台 A 依赖已由 T4-15A 满足，平台 B 仍待恢复并完成 T4-15B。
+- **依赖**：同平台的 T4-15 子阶段；平台 A 与平台 B 的 T4-15 均已完成。
 - **可能涉及的文件**：
   - `src/models/qwen2/model.hpp`
   - `src/models/qwen2/model.cpp`
@@ -896,7 +896,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 ### T4-17 实现设备安全的 KV Cache 增量 Decode 与 Reset
 
 - **目标**：缓存扩容用 D2D 保留有效前缀，新 K/V 写入设备缓存，后续每次只处理一个新 token；reset 清零逻辑长度并复用容量，不按 `maxseq` 一次性分配。
-- **依赖**：同平台的 T4-16 子阶段；当前平台 A 依赖已由 T4-16A 满足，平台 B 仍待恢复并完成 T4-16B。
+- **依赖**：同平台的 T4-16 子阶段；平台 A 与平台 B 的 T4-16 均已完成。
 - **可能涉及的文件**：
   - `src/models/qwen2/model.hpp`
   - `src/models/qwen2/model.cpp`
@@ -921,14 +921,14 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 - **平台 B 已完成验证（2026-08-10，本机 MetaX C500，第二轮实机验收）**：
   - 官方 `python test/test_infer.py --test --device nvidia --max_steps 4` 退出 0，完整 token 列表 14 tokens `[151646, 151646, 151644, 15191, 525, 498, 30, 151645, 151648, 198, 91786, 0, 358, 2776]` 与 HuggingFace 逐项一致；HF 约 1.08s，LLAISYS-C500 约 0.07s（prefill + 3 次增量 decode）。
   - 四个新 token `[91786, 0, 358, 2776]` 与平台 A、T3-11 CPU 基线及 PROGRESS.md 预期完全一致，证实 C500 上增量 KV Cache decode 路径正确。
-  - synthetic 2 层 F32 模型 KV Cache 验证：(a) 3-token prompt + 4 步 decode 与 HF 增量缓存路径逐 token 一致，且每步与 HF 全量重算对照一致；(b) 3 次 reset 重跑序列完全相同；(c) 1-token prompt + 8 步 decode 跨 capacity 1→2→4→8→16 扩容（增量序列 `[42, 906, 980, 832, 180, 722, 482, 411, 998]`）与 HF 完全一致；(d) 长生成后 reset 再跑短 prompt 结果正确（capacity 复用）；(e) 5 次连续短生成全部正确；(f) 3 组不同长度 prompt 均与 HF 一致。
+  - synthetic 2 层 F32 模型 KV Cache 验证：(a) 3-token prompt + 4 步 decode 与 HF 增量缓存路径逐 token 一致，且每步与 HF 全量重算对照一致；(b) 3 次 reset 重跑序列完全相同；(c) 1-token prompt + 8 步 decode 跨 capacity 1→2→4→8→16 扩容（增量序列 `[42, 906, 980, 832, 180, 722, 482, 411, 998]`）与 HF 完全一致；(d) 长生成后 reset 再跑短 prompt 结果正确（capacity 复用）；(e) 5 次连续短生成全部正确；(f) 3 组不同长度 prompt 均与 HF 一致；(g) 多 token decode 被正确拒绝：prefill 后直接通过 C API 传入 `ntoken=2` 触发 `std::invalid_argument("incremental decode expects exactly one new token")`，进程终止（跨 C ABI 异常，符合已知边界）。
 - **平台 B（MetaX C500）子阶段状态**：**已完成**（真实 BF16 模型官方四步 token 一致 + synthetic KV Cache 跨容量扩容、前缀保持、reset 复用、增量全量对照均通过）
 - **整体状态**：已完成（平台 A 与平台 B 均已独立通过）
 
 ### T4-18 双平台分阶段端到端一致性验收
 
 - **目标**：在两款真实平台上从短生成逐步扩大到正式长度，确认完整 token 列表严格一致，并记录性能和显存。
-- **依赖**：同平台的 T4-17 子阶段；当前平台 A 依赖已由 T4-17A 满足，平台 B 仍待恢复并完成 T4-17B。
+- **依赖**：同平台的 T4-17 子阶段；平台 A 与平台 B 的 T4-17 均已完成。
 - **可能涉及的文件**：原则上不修改官方测试；只根据首个实际分叉点最小修复对应已实现模块。
 - **验收方法**：在平台 A、B 分别依次执行；平台 A 每轮先按全局单卡策略选择一张条件合适的物理 A800，仅向进程暴露该卡并使用逻辑 device 0，四档在同一张卡上完成：
 
@@ -948,7 +948,7 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
   - 默认（无 `--max_steps`）：通过，完整列表 91 tokens，HF 4.70s / LLAISYS 1.06s。
   - 四档均使用同一 CUDA-enabled 产物（SHA256 `01cb5d50ed817eb01588173d7d7568f126da2f7187d07e2802980af8ac4d62f8`），长档实际使用增量 KV Cache。输出文本为 Qwen DeepSeek-R1 蒸馏模型的典型中英双语回复。
   - 未修改官方测试；`git diff --check` 通过，`git diff --name-only -- test` 为空。
-  - 峰值内存：四档加载阶段约 9.2s（首档，后续因磁盘缓存降至 1.9s），推理耗时分别为 0.1s/0.1s/1.0s/1.0s；进程峰值 RSS 约 12,653 MiB。C500 mx-smi 报告基线 826/65536 MiB（切片 GPU，板载 64 GB，可见配额约 16.3 GB），模型 BF16 权重 3,554,176,000 字节（约 3.39 GB）位于设备端，D2H 字节对照证实数据完整。
+  - 峰值显存（mx-smi `vis_vram used`，单模型实例）：baseline 826.5 MiB → 加载后 4,496.8 MiB（+3,670.2 MiB，模型 BF16 权重 3,389.5 MiB）→ 推理峰值 4,650.8 MiB（+154.0 MiB，含 KV Cache 惰性扩容与临时 Buffer）。KV Cache 若按 maxseq=131072 一次性预分配约需 3,584 MiB，实际短序列惰性扩容仅用 ~154 MiB。close 后显存回落至 1,020.8 MiB。
 - **平台 B（MetaX C500）子阶段状态**：**已完成**（四档端到端 token 一致性全部通过，峰值内存已记录）
 - **当前状态**：已完成（平台 A 与平台 B 四档均已独立通过）
 
@@ -967,19 +967,19 @@ safetensors.safe_open(file, framework="numpy", device="cpu")
 - **平台 B（MetaX C500）已完成（2026-08-10，第二轮实机验收）**：
   - CUDA-on 构建（`xmake f -c -m release --nv-gpu=y`，MACA cu-bridge shim → mxcc/cucc）全量通过，三份产物 SHA256 一致。
   - CPU 回归全部通过：`test/test_runtime.py --device cpu`、`test/test_tensor.py`、8 个 `test/ops/*.py --device cpu` 共四十八个 shape/dtype case 均 `Test passed!`。
-  - NVIDIA 回归：`test/test_runtime.py --device nvidia` 通过（Found 1）；Add/Argmax/Embedding/RMSNorm/RoPE/SwiGLU 六脚本通过；Linear 七组中五组通过、`(512,4096,4096)` F32 大矩阵按官方 1e-5 容差失败（T4-12B 已证实为 mcblas 与 cuBLAS fp32 舍入差异，非缺陷）；Self-Attention 官方脚本在调用 LLAISYS 前因 CPU mask 与 CUDA `attn_bias` 设备不一致退出（T4-13B 已留证）。两项均为已记录的非缺陷差异。
+  - NVIDIA 官方回归（如实区分"官方脚本退出 0"与"官方脚本失败但严格替代通过"）：Runtime 通过（Found 1）；Add/Argmax/Embedding/RMSNorm/RoPE/SwiGLU 六脚本**全部退出 0**；Linear 官方脚本**未全部退出 0**——七组中五组通过、`(512,4096,4096)` F32 大矩阵按官方 1e-5 容差 `AssertionError`（T4-12B 已证实为 mcblas 与 cuBLAS fp32 舍入差异，严格脚本以 fp64 真值通过）；Self-Attention 官方脚本**退出非零**——第一组 F32 reference 在调用 LLAISYS 前因 CPU `temp_mask` 与 CUDA `attn_bias` 设备不一致而 `RuntimeError`（T4-13B 已留证，严格脚本以同设备 reference + fp64 交叉验证通过）。两项官方失败均未修改测试，也未用 `|| true` 掩盖；严格替代测试均已独立通过。
   - 正式 Qwen2 推理四档（`--max_steps 1/4/128` 及默认）完整 token 列表均与 HF 逐项一致，T4-18B 已记录各档耗时。
   - CPU Task 3 回归：`test/test_infer.py --test --device cpu --max_steps 1` 通过，首个新 token `91786` 与 HF 一致。
   - 官方测试未被删除或放宽；`git diff --check` 通过，`git diff --name-only -- test` 为空。
   - 构建产物 SHA256：`01cb5d50ed817eb01588173d7d7568f126da2f7187d07e2802980af8ac4d62f8`，`ldd -r` 无未解析符号，链接 MACA 库（`libmcblas.so`/`libmcruntime.so`/`libruntime_cu.so`）。
   - 现有 GitHub Actions 无 GPU runner；C500 通过状态来自本机真实设备日志。
-  - 平台 C500 交付材料：设备 MetaX C500（KMD 3.8.30、MACA 3.5.3.20、cu-bridge、mxcc 1.0.0）、PyTorch 2.8.0+metax3.5.3.9、xmake 3.0.9（`XMAKE_ROOT=y`）。复现命令：`export XMAKE_ROOT=y && LD_LIBRARY_PATH="..." xmake f -c -m release --nv-gpu=y && xmake -r -v && xmake install -y && PYTHONPATH=python python test/test_infer.py --test --device nvidia --model <MODEL_PATH>`。各档 token 一致、耗时（max_steps 1/4/128/默认：0.02s/0.07s/1.07s/1.06s）与峰值内存（进程 RSS ~12,653 MiB，设备权重 3.39 GB）均已记录。
+  - 平台 C500 交付材料：设备 MetaX C500（KMD 3.8.30、MACA 3.5.3.20、cu-bridge、mxcc 1.0.0）、PyTorch 2.8.0+metax3.5.3.9、xmake 3.0.9（`XMAKE_ROOT=y`）。复现命令：`export XMAKE_ROOT=y && LD_LIBRARY_PATH="..." xmake f -c -m release --nv-gpu=y && xmake -r -v && xmake install -y && PYTHONPATH=python python test/test_infer.py --test --device nvidia --model <MODEL_PATH>`。各档 token 一致、耗时（max_steps 1/4/128/默认：0.02s/0.07s/1.07s/1.06s）、峰值显存（mx-smi `vis_vram used` 4,650.8 MiB，含模型权重 3,389.5 MiB + KV Cache 154.0 MiB + 临时 Buffer 280.7 MiB）与 CPU 回归均已记录。
 - **当前状态**：已完成（平台 A 交付材料已形成；平台 B 正式推理四档 token 一致、CPU 回归与算子自查均通过）
 
 ## 当前已知 Task 4 风险与测试缺口
 
 1. 第二款平台已由沐曦 MetaX C500 实机证据确定，T4-01 的双平台冻结及 T4-02 的 xmake + mxcc/cu-bridge 构建已完成。平台 B 的全部子阶段（T4-04 Runtime、T4-05B 生命周期、T4-06B～T4-14B 八算子总回归、T4-15B 真实 339 BF16 权重加载与 D2H 字节对照、T4-16B 首次 CUDA prefill、T4-17B KV Cache 增量 decode、T4-18B 四档端到端一致性、T4-19B 完整回归）已于 2026-08-10 在 MetaX C500 实机环境独立闭环并通过，目标模型通过 HF mirror 下载，构建产物 SHA256 `01cb5d50ed817eb01588173d7d7568f126da2f7187d07e2802980af8ac4d62f8`。
-2. CUDA 构建、平台 A Runtime、T4-05A Context/Runtime/Storage/Tensor 生命周期、T4-06A～T4-13A 的 8 个算子、T4-14A 八算子总回归、T4-15A 模型加载、T4-16A 首次 CUDA prefill 及 T4-17A KV Cache 增量 decode/reset 已依次闭环。平台 B 路线已全部完成：T4-04 Runtime、T4-05B 生命周期、T4-06B～T4-14B（8 算子官方/严格/CPU 总回归）、T4-15B（synthetic 15 权重 D2H 精确对照 + 14/15 类反向测试）、T4-16B（synthetic 1/5-token 三方对照 + 3 次 reset 重跑 + 2 步 decode）、T4-17B（3-token prefill + 4 步增量 decode + 每步全量对照 + 8 步跨容量扩容至 16 + reset 内容复用 + 不同 prompt）以及 T4-18B（四档端到端 + 峰值 RSS 12653 MiB）均已独立通过。平台 A 的 T4-18A 由用户在另一台机器完成。
+2. CUDA 构建、平台 A Runtime、T4-05A Context/Runtime/Storage/Tensor 生命周期、T4-06A～T4-13A 的 8 个算子、T4-14A 八算子总回归、T4-15A 模型加载、T4-16A 首次 CUDA prefill 及 T4-17A KV Cache 增量 decode/reset 已依次闭环。平台 B 路线已全部完成：T4-04 Runtime、T4-05B 生命周期、T4-06B～T4-14B（8 算子官方/严格/CPU 总回归）、T4-15B（synthetic 15 权重 D2H 精确对照 + 15 类反向测试）、T4-16B（synthetic 1/5-token 三方对照 + 3 次 reset 重跑 + 2 步 decode）、T4-17B（3-token prefill + 4 步增量 decode + 每步全量对照 + 8 步跨容量扩容至 16 + reset 内容复用 + 不同 prompt）以及 T4-18B（四档端到端 + 峰值显存 4,650.8 MiB）均已独立通过。平台 A 的 T4-18A 由用户在另一台机器完成。
 3. 现有官方 Runtime 脚本的零设备静默跳过及覆盖缺口已在平台 A 用独立 Python + 原生 CUDA 测试补齐；T4-04 已在平台 B 重跑等价严格检查通过。
 4. 官方 Embedding 脚本未 assert 比较返回值的缺口已分别在两平台用十二组精确断言补齐，官方 SwiGLU 未覆盖的 `out == gate`、官方 RoPE 未覆盖的 `out == in`、官方 Argmax 的值/索引弱 `or` 断言与官方 Linear 未覆盖的无 bias/M=1/代表大矩阵已分别用十八组、二十四组、十三组、十六组严格 reference 对照补齐；平台 B 的 T4-07B～T4-12B 已独立重跑全部通过。
 5. `test/ops/self_attention.py` 的 causal mask 创建未显式放在 query 设备上，平台 A 在 T4-13A 与 T4-14A 两次均实证 GPU reference 会先于后端因 CPU/CUDA mask 设备不一致失败；平台 B 的 T4-13B 也在本机重跑出完全相同的 `expected self and mask to be on the same device` 退出并留证。两平台都用包含官方两种 shape 在内的十五组同设备严格 reference 验收后端，官方测试均未修改。
